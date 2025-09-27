@@ -1,0 +1,16 @@
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  host: 127.0.0.1
+  port: 5432
+  pool: 10
+  username: econ
+  password: changeme
+
+development:
+  <<: *default
+  database: economic_generator_development
+
+test:
+  <<: *default
+  database: economic_generator_test
