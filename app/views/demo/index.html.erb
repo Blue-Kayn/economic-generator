@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Economic Generator — Demo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    h1 { margin: 0 0 8px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
+    label { display: block; font-weight: 600; margin-bottom: 8px; }
+    input, textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+    button { padding: 10px 14px; border: 0; border-radius: 8px; background:#111; color:#fff; cursor:pointer; font-weight:600; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    pre { background: #f8f8f8; padding: 12px; border-radius: 8px; overflow: auto; }
+    .row { display:flex; gap:12px; align-items:center; }
+    .muted { color:#666; font-size:13px; }
+  </style>
+</head>
+<body>
+  <h1>Economic Generator — Demo</h1>
+  <p class="muted">Paste a PF/Bayut URL or enrich a batch of (building × unit type). No scraping; fast precomputed economics.</p>
+
+  <div class="grid">
+    <!-- Analyze Link -->
+    <div class="card">
+      <h2>Analyze PF/Bayut Link</h2>
+      <label for="analyzeUrl">Listing URL</label>
+      <input id="analyzeUrl" type="url" placeholder="https://www.propertyfinder.ae/...">
+      <div class="row" style="margin-top:10px;">
+        <button id="analyzeBtn">Analyze</button>
+        <span id="analyzeStatus" class="muted"></span>
+      </div>
+      <h3>Result</h3>
+      <pre id="analyzeOut">—</pre>
+    </div>
+
+    <!-- Batch Enrich -->
+    <div class="card">
+      <h2>Batch Enrich (PF page load style)</h2>
+      <label for="batchJson">Items JSON</label>
+      <textarea id="batchJson" rows="8">{
+  "items": [
+    { "building_name": "Palm Views", "unit_type": "Studio" },
+    { "building_name": "Palm Tower", "unit_type": "1BR" }
+  ]
+}</textarea>
+      <div class="row" style="margin-top:10px;">
+        <button id="batchBtn">Enrich</button>
+        <span id="batchStatus" class="muted"></span>
+      </div>
+      <h3>Result</h3>
+      <pre id="batchOut">—</pre>
+    </div>
+  </div>
+
+  <script>
+    async function postJSON(url, body) {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const text = await res.text();
+      try { return { status: res.status, json: JSON.parse(text) }; }
+      catch { return { status: res.status, json: text }; }
+    }
+
+    // Analyze Link
+    document.getElementById('analyzeBtn').addEventListener('click', async () => {
+      const url = document.getElementById('analyzeUrl').value.trim();
+      const statusEl = document.getElementById('analyzeStatus');
+      const out = document.getElementById('analyzeOut');
+      statusEl.textContent = "Running…";
+      out.textContent = "";
+      try {
+        const { status, json } = await postJSON("/api/analyze_link", { url });
+        statusEl.textContent = "HTTP " + status;
+        out.textContent = JSON.stringify(json, null, 2);
+      } catch (e) {
+        statusEl.textContent = "Error";
+        out.textContent = String(e);
+      }
+    });
+
+    // Batch Enrich
+    document.getElementById('batchBtn').addEventListener('click', async () => {
+      const statusEl = document.getElementById('batchStatus');
+      const out = document.getElementById('batchOut');
+      let payload;
+      try {
+        payload = JSON.parse(document.getElementById('batchJson').value);
+      } catch (e) {
+        statusEl.textContent = "Invalid JSON";
+        out.textContent = String(e);
+        return;
+      }
+      statusEl.textContent = "Running…";
+      out.textContent = "";
+      try {
+        const { status, json } = await postJSON("/api/enrich", payload);
+        statusEl.textContent = "HTTP " + status;
+        out.textContent = JSON.stringify(json, null, 2);
+      } catch (e) {
+        statusEl.textContent = "Error";
+        out.textContent = String(e);
+      }
+    });
+  </script>
+</body>
+</html>

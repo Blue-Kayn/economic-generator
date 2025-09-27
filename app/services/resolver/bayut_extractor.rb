@@ -2,11 +2,11 @@
 # app/services/resolver/bayut_extractor.rb
 require "json"
 require_relative "normalize"
+require_relative "aliases"
+require_relative "page_fetcher"
 
 module Resolver
   class BayutExtractor
-    include Resolver::Normalize
-
     def self.extract(url)
       doc = PageFetcher.get(url)
 
@@ -22,34 +22,47 @@ module Resolver
           payload.each do |p|
             next unless p.is_a?(Hash)
             name = p["name"] || p.dig("@graph", 0, "name")
+            desc = p["description"] || p.dig("@graph", 0, "description")
             building ||= name
-            desc = p["description"]
             unit_type ||= Resolver::Normalize.unit_type_from_text("#{name} #{desc}")
-            addr = p["address"]
-            facts[:address] ||= addr if addr
+            facts[:address] ||= p["address"] if p["address"]
           end
         rescue
           next
         end
       end
 
-      # 2) Fallback meta/title
+      # 2) og:title / <title>
       if building.nil?
         meta_title = doc.at('meta[property="og:title"]')&.[]("content")
-        building ||= meta_title
-        unit_type ||= Resolver::Normalize.unit_type_from_text(meta_title)
+        page_title = doc.at("title")&.text
+        candidate  = meta_title || page_title
+        building ||= candidate
+        unit_type ||= Resolver::Normalize.unit_type_from_text(candidate)
       end
 
-      building = Resolver::Normalize.clean_building_name(building)
-      canonical = Resolver::Aliases.canonical_for(building) if building
+      # 3) Meta description
+      if unit_type.nil?
+        meta_desc = doc.at('meta[name="description"]')&.[]("content")
+        unit_type ||= Resolver::Normalize.unit_type_from_text(meta_desc)
+      end
+
+      # 4) URL path fallback
+      if unit_type.nil?
+        unit_type ||= Resolver::Normalize.unit_type_from_text(url)
+      end
+
+      # Normalize & alias
+      building = Resolver::Normalize.normalize_building(building)
+      building = Resolver::Aliases.canonical_for(building) if building
+      unit_type ||= Resolver::Normalize.unit_type_from_text(building)
 
       conf = 0.5
-      conf += 0.2 if canonical && canonical != building
-      conf += 0.2 if facts[:address]
-      conf += 0.1 if unit_type
+      conf += 0.2 if building
+      conf += 0.3 if unit_type
 
       {
-        building_name: canonical || building,
+        building_name: building,
         unit_type: unit_type,
         confidence: conf.clamp(0.0, 1.0),
         facts: facts.compact
