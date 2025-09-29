@@ -6,5 +6,6 @@ Rails.application.routes.draw do
     post "analyze_link",     to: "analyze#link"
     post "enrich",           to: "enrich#create"
     post "listings/lookup",  to: "listings#lookup"
+    post "listings/debug",   to: "listings#debug"
   end
 end
