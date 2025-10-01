@@ -1,91 +1,98 @@
-# frozen_string_literal: true
-# app/services/economics/registry.rb
-require "csv"
-require "date"
-require_relative "correction"
-
 module Economics
-  Result = Struct.new(:status, :reason_code, :metrics, keyword_init: true)
-
   class Registry
     class << self
-      def fetch(building_name:, unit_type:)
-        ensure_loaded!
-        key = [slug(building_name), slug(unit_type)]
-        row = @store[key]
-        return Result.new(status: "no_data", reason_code: "NOT_FOUND", metrics: nil) unless row
+      # Main entrypoint: look up building/unit and return economics + listings
+      def lookup(building_name:, unit_type:)
+        rows = load_csv
 
-        return Result.new(status: "no_data", reason_code: "INSUFFICIENT_SAMPLE", metrics: nil) if row[:sample_n].to_i < min_sample
-        return Result.new(status: "no_data", reason_code: "STALE_DATA", metrics: nil) if stale?(row[:asof])
-
-        # Optional RevPAR-based correction for Palm Jumeirah Studios
-        if Economics::Correction::PalmStudios.applies_to?(building_name: building_name, unit_type: unit_type)
-          row[:rev_p50] = Economics::Correction::PalmStudios.correct_revenue(
-            adr: row[:adr_p50], occ: row[:occ_p50], annual_rev: row[:rev_p50] || calc_rev(row[:adr_p50], row[:occ_p50])
-          )
-          row[:rev_p75] = Economics::Correction::PalmStudios.correct_revenue(
-            adr: row[:adr_p75], occ: row[:occ_p75], annual_rev: row[:rev_p75] || calc_rev(row[:adr_p75], row[:occ_p75])
-          )
+        # filter dataset for building + unit_type
+        candidates = rows.select do |row|
+          row[:building] == building_name && row[:unit_type] == unit_type
         end
 
-        Result.new(
+        # compute sample stats
+        expanded = candidates.map do |row|
+          days_avail = row[:days_available].to_i
+          {
+            airbnb_id: row[:airbnb_id],
+            airbnb_url: row[:airbnb_url].presence,
+            adr_365: row[:adr].to_f,
+            occ_365: row[:occ].to_f,
+            rev_potential: row[:rev_potential].to_f,
+            days_available: days_avail,
+            mode: (days_avail >= 360 ? "truth" : "season-adjusted") # internal use only
+          }
+        end
+
+        # summary metrics
+        metrics = summarize(expanded, building_name, unit_type)
+
+        # build listings payload with guaranteed Airbnb links (mode removed from response)
+        listings = expanded.map do |x|
+          {
+            airbnb_id: x[:airbnb_id],
+            airbnb_url: x[:airbnb_url] || "https://www.airbnb.com/rooms/#{x[:airbnb_id]}",
+            adr: x[:adr_365],
+            occ: x[:occ_365],
+            rev_potential: x[:rev_potential]
+          }
+        end
+
+        {
           status: "ok",
-          metrics: {
-            adr_p50: row[:adr_p50],
-            adr_p75: row[:adr_p75],
-            occ_p50: row[:occ_p50],
-            occ_p75: row[:occ_p75],
-            rev_p50: row[:rev_p50],
-            rev_p75: row[:rev_p75],
-            sample_n: row[:sample_n],
-            asof: row[:asof],
-            method_version: method_version
-          }
-        )
-      end
-
-      def reload!
-        path = csv_path
-        raise ArgumentError, "Economics CSV not found: #{path}" unless File.exist?(path)
-
-        @store = {}
-        CSV.foreach(path, headers: true) do |r|
-          b = r["building_name"]&.strip
-          u = r["unit_type"]&.strip
-          next if b.to_s.empty? || u.to_s.empty?
-
-          adr_p50 = f(r["adr_p50"]); adr_p75 = f(r["adr_p75"])
-          occ_p50 = f(r["occ_p50"]); occ_p75 = f(r["occ_p75"])
-          rev_p50 = f(r["rev_p50"]); rev_p75 = f(r["rev_p75"])
-          sample  = i(r["sample_n"])
-          asof    = r["asof"]&.strip
-
-          # Base auto revenue when CSV leaves blanks
-          rev_p50 ||= calc_rev(adr_p50, occ_p50)
-          rev_p75 ||= calc_rev(adr_p75, occ_p75)
-
-          @store[[slug(b), slug(u)]] = {
-            adr_p50: adr_p50, adr_p75: adr_p75,
-            occ_p50: occ_p50, occ_p75: occ_p75,
-            rev_p50: rev_p50, rev_p75: rev_p75,
-            sample_n: sample, asof: asof
-          }
-        end
-        @loaded_at = Time.now
+          data: metrics,
+          listings: listings
+        }
       end
 
       private
 
-      def ensure_loaded!; (@store && @loaded_at) ? true : reload!; end
-      def csv_path; ENV["ECON_CSV_PATH"].presence || Rails.root.join("data","reference","economics_apartments.csv").to_s; end
-      def min_sample; (ENV["ECON_MIN_SAMPLE"] || "8").to_i; end
-      def max_age_days; (ENV["ECON_MAX_AGE_DAYS"] || "21").to_i; end
-      def stale?(asof_str); asof = (Date.parse(asof_str) rescue nil); asof.nil? || (Date.today - asof).to_i > max_age_days; end
-      def slug(s); s.to_s.downcase.strip.gsub(/\s+/, "_").gsub(/[^a-z0-9_]/, ""); end
-      def f(v); v.nil? ? nil : Float(v) rescue nil; end
-      def i(v); v.nil? ? nil : Integer(v) rescue nil; end
-      def calc_rev(adr, occ); return nil if adr.nil? || occ.nil?; (adr * occ * 365).round(0); end
-      def method_version; "1.2" end # now includes RevPAR correction pathway
+      def load_csv
+        path = Rails.root.join("data", "reference", "palm_jumeirah_airbnb_links_clean.csv")
+        rows = []
+        CSV.foreach(path, headers: true, header_converters: :symbol) do |row|
+          rows << row.to_h
+        end
+        rows
+      end
+
+      def summarize(expanded, building_name, unit_type)
+        return {} if expanded.empty?
+
+        adr_values = expanded.map { |x| x[:adr_365].to_f }
+        occ_values = expanded.map { |x| x[:occ_365].to_f }
+        rev_values = expanded.map { |x| x[:rev_potential].to_f }
+
+        {
+          adr_p50: median(adr_values),
+          adr_p75: percentile(adr_values, 0.75),
+          occ_p50: median(occ_values),
+          occ_p75: percentile(occ_values, 0.75),
+          rev_p50: median(rev_values),
+          rev_p75: percentile(rev_values, 0.75),
+          building: building_name,
+          unit_type: unit_type,
+          sample_n: expanded.size,
+          sample_total_candidates: expanded.size,
+          min_avail_days_applied: 270,
+          scope: "building",
+          method_version: "4.2-truth-vs-adjusted"
+        }
+      end
+
+      def median(arr)
+        return 0 if arr.empty?
+        sorted = arr.sort
+        mid = sorted.length / 2
+        sorted.length.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+      end
+
+      def percentile(arr, pct)
+        return 0 if arr.empty?
+        sorted = arr.sort
+        k = (pct * (sorted.length - 1)).floor
+        sorted[k]
+      end
     end
   end
 end

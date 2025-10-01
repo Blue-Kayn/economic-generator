@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Analyze a Property Link</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+    <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
+    <style>
+      body {
+        font-family: sans-serif;
+        background-color: #0f172a;
+        color: #f9fafb;
+        margin: 2rem;
+      }
+      h1 {
+        font-size: 1.8rem;
+        margin-bottom: 1rem;
+      }
+      input[type="text"] {
+        width: 70%;
+        padding: 0.5em;
+        border-radius: 6px;
+        border: none;
+        margin-right: 0.5em;
+      }
+      button {
+        padding: 0.6em 1.2em;
+        background-color: #3b82f6;
+        border: none;
+        border-radius: 6px;
+        color: white;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #2563eb;
+      }
+      .summary {
+        background: #111827;
+        padding: 1em;
+        border-radius: 8px;
+        margin-top: 1em;
+        margin-bottom: 1em;
+      }
+      .listings {
+        background: #1f2937;
+        padding: 1em;
+        border-radius: 8px;
+        margin-top: 1em;
+      }
+      .listings table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .listings th, .listings td {
+        padding: 0.5em;
+        text-align: left;
+        border-bottom: 1px solid #374151;
+      }
+      .listings a {
+        color: #3b82f6;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Analyze a Property Link</h1>
+    <p>Paste a PF/Bayut/Dubizzle URL. We'll resolve the building & unit, compute economics, and show the Airbnb comps we used.</p>
+
+    <div>
+      <input type="text" id="url" placeholder="Paste a link here" />
+      <button onclick="runAnalyze()">Analyze</button>
+    </div>
+
+    <div id="result"></div>
+
+    <script>
+      async function runAnalyze() {
+        const url = document.getElementById("url").value;
+        const res = await fetch(`/api/analyze/link?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+
+        const resultBox = document.getElementById("result");
+        resultBox.innerHTML = "";
+
+        // ECONOMICS SUMMARY
+        if (data.economics && data.economics.status === "ok") {
+          const econ = data.economics.data;
+          resultBox.innerHTML += `
+            <div class="summary">
+              <h3>Economics (p50) · Building: ${econ.building} · Unit: ${econ.unit_type}</h3>
+              <p><b>Yearly Revenue Potential</b>: AED ${econ.rev_p50.toLocaleString()}</p>
+              <p><b>Average Yearly Occupancy</b>: ${econ.occ_p50.toFixed(1)}%</p>
+              <p><b>Average Daily Rate throughout the Year</b>: AED ${econ.adr_p50.toFixed(0)}</p>
+              <small>Sample used: ${econ.sample_n} (min ≥ ${econ.min_avail_days_applied} days)</small>
+            </div>
+          `;
+        }
+
+        // --- MERGE LISTINGS ---
+        const econListings = data.economics && data.economics.listings ? data.economics.listings : [];
+        const urlListings = (data.listings && data.listings.items) ? data.listings.items : [];
+
+        // join by airbnb_id
+        const merged = econListings.map(l => {
+          const match = urlListings.find(u => u.airbnb_id === l.airbnb_id);
+          return {
+            ...l,
+            airbnb_url: match ? match.airbnb_url : null
+          };
+        });
+
+        // LISTINGS TABLE
+        if (merged.length > 0) {
+          let html = `
+            <div class="listings">
+              <h3>Listings Used</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Airbnb ID</th>
+                    <th>ADR (AED)</th>
+                    <th>Occupancy %</th>
+                    <th>Revenue Potential (AED)</th>
+                    <th>Mode</th>
+                    <th>Link</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+          merged.forEach(item => {
+            html += `
+              <tr>
+                <td>${item.airbnb_id || "-"}</td>
+                <td>${item.adr ? item.adr.toFixed(0) : "-"}</td>
+                <td>${item.occ ? item.occ.toFixed(1) : "-"}</td>
+                <td>${item.rev_potential ? item.rev_potential.toLocaleString() : "-"}</td>
+                <td>${item.mode || "-"}</td>
+                <td>${item.airbnb_url ? `<a href="${item.airbnb_url}" target="_blank">Airbnb</a>` : ""}</td>
+              </tr>
+            `;
+          });
+          html += `
+                </tbody>
+              </table>
+            </div>
+          `;
+          resultBox.innerHTML += html;
+        }
+      }
+    </script>
+  </body>
+</html>

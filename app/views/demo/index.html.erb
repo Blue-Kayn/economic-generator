@@ -3,108 +3,126 @@
 <head>
   <meta charset="utf-8" />
   <title>Economic Generator — Demo</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
-    h1 { margin: 0 0 8px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
-    label { display: block; font-weight: 600; margin-bottom: 8px; }
-    input, textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
-    button { padding: 10px 14px; border: 0; border-radius: 8px; background:#111; color:#fff; cursor:pointer; font-weight:600; }
-    button:disabled { opacity: 0.5; cursor: default; }
-    pre { background: #f8f8f8; padding: 12px; border-radius: 8px; overflow: auto; }
-    .row { display:flex; gap:12px; align-items:center; }
-    .muted { color:#666; font-size:13px; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; background:#fafafa; margin:0; }
+    .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    h1 { margin: 0 0 12px; }
+    p.sub { color:#666; margin-top: 4px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.06); padding: 16px; }
+    .label { font-size: 12px; color:#555; margin-bottom:6px; display:block; }
+    input[type="text"], textarea {
+      width: 100%; padding: 10px 12px; border-radius: 10px; border:1px solid #ddd;
+      font-size: 14px; outline: none; box-sizing: border-box;
+    }
+    textarea { min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    button {
+      background: black; color: white; border: none; padding: 10px 14px; border-radius: 10px; cursor: pointer;
+    }
+    .muted { color:#777; font-size: 12px; margin-left: 10px; }
+    pre {
+      background: #0b0b0b; color: #d7f7d3; padding: 12px; border-radius: 10px; overflow: auto;
+      font-size: 12px; line-height: 1.4; max-height: 420px;
+    }
+    .row { display: flex; align-items: center; gap:12px; margin: 10px 0 14px; }
   </style>
 </head>
 <body>
-  <h1>Economic Generator — Demo</h1>
-  <p class="muted">Paste a PF/Bayut URL or enrich a batch of (building × unit type). No scraping; fast precomputed economics.</p>
+  <div class="wrap">
+    <h1>Economic Generator — Demo</h1>
+    <p class="sub">Paste a PF/Bayut URL or enrich a batch of (building × unit type). No scraping; fast precomputed economics.</p>
 
-  <div class="grid">
-    <!-- Analyze Link -->
-    <div class="card">
-      <h2>Analyze PF/Bayut Link</h2>
-      <label for="analyzeUrl">Listing URL</label>
-      <input id="analyzeUrl" type="url" placeholder="https://www.propertyfinder.ae/...">
-      <div class="row" style="margin-top:10px;">
-        <button id="analyzeBtn">Analyze</button>
-        <span id="analyzeStatus" class="muted"></span>
+    <div class="grid">
+      <!-- Analyze single PF/Bayut link -->
+      <div class="card">
+        <h3>Analyze PF/Bayut Link</h3>
+        <label class="label">Listing URL</label>
+        <input id="linkInput" type="text" placeholder="https://www.propertyfinder.ae/en/plp/..." />
+        <div class="row">
+          <button id="analyzeBtn">Analyze</button>
+          <span id="analyzeStatus" class="muted">—</span>
+        </div>
+        <label class="label">Result</label>
+        <pre id="analyzeOut">–</pre>
       </div>
-      <h3>Result</h3>
-      <pre id="analyzeOut">—</pre>
-    </div>
 
-    <!-- Batch Enrich -->
-    <div class="card">
-      <h2>Batch Enrich (PF page load style)</h2>
-      <label for="batchJson">Items JSON</label>
-      <textarea id="batchJson" rows="8">{
+      <!-- Batch enrich -->
+      <div class="card">
+        <h3>Batch Enrich (PF page load style)</h3>
+        <label class="label">Items JSON</label>
+        <textarea id="batchInput">{
   "items": [
     { "building_name": "Palm Views", "unit_type": "Studio" },
-    { "building_name": "Palm Tower", "unit_type": "1BR" }
+    { "building_name": "The Palm Tower", "unit_type": "1BR" }
   ]
 }</textarea>
-      <div class="row" style="margin-top:10px;">
-        <button id="batchBtn">Enrich</button>
-        <span id="batchStatus" class="muted"></span>
+        <div class="row">
+          <button id="batchBtn">Enrich</button>
+          <span id="batchStatus" class="muted">—</span>
+        </div>
+        <label class="label">Result</label>
+        <pre id="batchOut">–</pre>
       </div>
-      <h3>Result</h3>
-      <pre id="batchOut">—</pre>
     </div>
   </div>
 
   <script>
-    async function postJSON(url, body) {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      const text = await res.text();
-      try { return { status: res.status, json: JSON.parse(text) }; }
-      catch { return { status: res.status, json: text }; }
+    const pretty = (obj) => JSON.stringify(obj, null, 2);
+
+    async function hitAnalyze(url) {
+      const endpoint = "/api/analyze/link";
+      const res = await fetch(endpoint + "?url=" + encodeURIComponent(url), { method: "GET" });
+      const json = await res.json();
+      return { status: res.status, json };
     }
 
-    // Analyze Link
-    document.getElementById('analyzeBtn').addEventListener('click', async () => {
-      const url = document.getElementById('analyzeUrl').value.trim();
-      const statusEl = document.getElementById('analyzeStatus');
-      const out = document.getElementById('analyzeOut');
-      statusEl.textContent = "Running…";
-      out.textContent = "";
+    async function hitBatch(itemsJson) {
+      const endpoint = "/api/enrich";
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: itemsJson
+      });
+      const json = await res.json();
+      return { status: res.status, json };
+    }
+
+    // Wire UI
+    const linkInput = document.getElementById("linkInput");
+    const analyzeBtn = document.getElementById("analyzeBtn");
+    const analyzeStatus = document.getElementById("analyzeStatus");
+    const analyzeOut = document.getElementById("analyzeOut");
+
+    analyzeBtn.addEventListener("click", async () => {
+      const url = linkInput.value.trim();
+      if (!url) { analyzeOut.textContent = "Please paste a PF/Bayut URL."; return; }
+      analyzeStatus.textContent = "…";
       try {
-        const { status, json } = await postJSON("/api/analyze_link", { url });
-        statusEl.textContent = "HTTP " + status;
-        out.textContent = JSON.stringify(json, null, 2);
+        const { status, json } = await hitAnalyze(url);
+        analyzeStatus.textContent = "HTTP " + status;
+        analyzeOut.textContent = pretty(json);
       } catch (e) {
-        statusEl.textContent = "Error";
-        out.textContent = String(e);
+        analyzeStatus.textContent = "error";
+        analyzeOut.textContent = String(e);
       }
     });
 
-    // Batch Enrich
-    document.getElementById('batchBtn').addEventListener('click', async () => {
-      const statusEl = document.getElementById('batchStatus');
-      const out = document.getElementById('batchOut');
-      let payload;
+    const batchInput = document.getElementById("batchInput");
+    const batchBtn = document.getElementById("batchBtn");
+    const batchStatus = document.getElementById("batchStatus");
+    const batchOut = document.getElementById("batchOut");
+
+    batchBtn.addEventListener("click", async () => {
+      const body = batchInput.value;
+      batchStatus.textContent = "…";
       try {
-        payload = JSON.parse(document.getElementById('batchJson').value);
+        const { status, json } = await hitBatch(body);
+        batchStatus.textContent = "HTTP " + status;
+        batchOut.textContent = pretty(json);
       } catch (e) {
-        statusEl.textContent = "Invalid JSON";
-        out.textContent = String(e);
-        return;
-      }
-      statusEl.textContent = "Running…";
-      out.textContent = "";
-      try {
-        const { status, json } = await postJSON("/api/enrich", payload);
-        statusEl.textContent = "HTTP " + status;
-        out.textContent = JSON.stringify(json, null, 2);
-      } catch (e) {
-        statusEl.textContent = "Error";
-        out.textContent = String(e);
+        batchStatus.textContent = "error";
+        batchOut.textContent = String(e);
       }
     });
   </script>

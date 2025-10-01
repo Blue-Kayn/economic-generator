@@ -1,11 +1,20 @@
 Rails.application.routes.draw do
-  get "demo", to: "demo#index"
+  # Demo page (browser)
+  get "/demo", to: "demo#index"
+  root to: "demo#index"
+  get "/analyze", to: "analyze#index"
 
+
+  # API namespace (browser + programmatic)
   namespace :api do
-    post "economics/lookup", to: "economics#lookup"
-    post "analyze_link",     to: "analyze#link"
-    post "enrich",           to: "enrich#create"
-    post "listings/lookup",  to: "listings#lookup"
-    post "listings/debug",   to: "listings#debug"
+    # Listings & Economics (GET for browser, POST for programmatic)
+    match "listings/lookup",   to: "listings#lookup",   via: [:get, :post]
+    match "economics/lookup",  to: "economics#lookup",  via: [:get, :post]
+
+    # Analyze a PF/Bayut URL (returns resolver + economics + a few listings)
+    match "analyze/link",      to: "analyze#link",      via: [:get, :post]
+
+    # Batch enrich [{building_name, unit_type}]
+    match "enrich",            to: "enrich#batch",      via: [:get, :post]
   end
 end

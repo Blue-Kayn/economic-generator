@@ -1,7 +1,7 @@
 # config/initializers/listings_registry.rb
-# Autoload the building→Airbnb links registry at boot (safe no-op if file missing).
+# Preload Listings::Registry to warm its CSV cache on boot (safe no-op if missing).
 begin
-  Listings::Registry.reload!
+  Listings::Registry.fetch(building_name: "dummy", unit_type: "dummy", limit: 0)
 rescue => e
-  Rails.logger.warn("[Listings::Registry] #{e.class}: #{e.message}")
+  Rails.logger.warn("[Listings::Registry preload] #{e.class}: #{e.message}")
 end
