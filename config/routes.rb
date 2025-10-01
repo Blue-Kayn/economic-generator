@@ -4,9 +4,8 @@ Rails.application.routes.draw do
   root to: "demo#index"
   get "/analyze", to: "analyze#index"
 
-
   # API namespace (browser + programmatic)
-  namespace :api do
+  namespace :api, defaults: { format: :json } do
     # Listings & Economics (GET for browser, POST for programmatic)
     match "listings/lookup",   to: "listings#lookup",   via: [:get, :post]
     match "economics/lookup",  to: "economics#lookup",  via: [:get, :post]

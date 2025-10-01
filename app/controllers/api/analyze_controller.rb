@@ -9,116 +9,155 @@ module Api
         return render json: { status: "error", error: "url_missing_or_invalid" }, status: 400
       end
 
-      Listings::Registry.send(:load_rows!)
-      lrows = Listings::Registry.instance_variable_get(:@rows) || []
-
-      resolved = resolve_from_url(url, lrows)
+      resolved = Resolver::Dispatcher.resolve(url)
 
       if resolved[:building_name].present?
-        chosen = choose_unit_for_building(lrows, resolved[:building_name], resolved[:unit_type])
+        normalized_unit = normalize_unit_type(resolved[:unit_type])
+        
+        Listings::Registry.send(:load_rows!)
+        lrows = Listings::Registry.instance_variable_get(:@rows) || []
+        
+        # Use fuzzy matching to find best building from CSV
+        matched_building = find_best_building_match(lrows, resolved[:building_name])
+        
+        if matched_building
+          chosen = choose_unit_for_building(lrows, matched_building, normalized_unit)
 
-        econ = Economics::Registry.lookup(
-          building_name: resolved[:building_name],
-          unit_type: chosen[:unit_type]
-        )
+          econ = Economics::Registry.lookup(
+            building_name: matched_building,
+            unit_type: chosen[:unit_type]
+          )
 
-        if econ[:status] == "no_data" && econ[:reason_code] == "INSUFFICIENT_SAMPLE"
-          econ[:user_message] = "No solid data available for such unit"
+          if econ[:status] == "no_data"
+            econ[:user_message] = case econ[:reason_code]
+            when "INSUFFICIENT_SAMPLE"
+              "Not enough comparable listings (need at least 3 with 270+ days data)"
+            when "BUILDING_NOT_FOUND"
+              "This building is not in our Palm Jumeirah database yet"
+            when "UNIT_TYPE_INVALID"
+              "Unit type could not be determined"
+            else
+              "No economics data available"
+            end
+          end
+
+          sources = Economics::Registry.sources(
+            building_name: matched_building,
+            unit_type: chosen[:unit_type]
+          )
+
+          lis = Listings::Registry.fetch(
+            building_name: matched_building,
+            unit_type: chosen[:unit_type],
+            limit: 6
+          )
+
+          render json: {
+            resolver: {
+              building_name: resolved[:building_name],
+              building_name_matched: matched_building,
+              unit_type: resolved[:unit_type],
+              unit_type_normalized: normalized_unit,
+              confidence: resolved[:confidence],
+              facts: resolved[:facts]
+            },
+            selection: {
+              building_name: matched_building,
+              unit_type_requested: normalized_unit,
+              unit_type_chosen: chosen[:unit_type],
+              reason: chosen[:reason],
+              available_units: chosen[:available_units]
+            },
+            economics: econ,
+            economics_sources: sources,
+            listings: lis
+          }
+        else
+          render json: {
+            resolver: resolved,
+            economics: { 
+              status: "no_data", 
+              reason_code: "BUILDING_NOT_FOUND", 
+              data: nil, 
+              user_message: "Could not match building to our database" 
+            },
+            listings: { status: "no_data", building_name: nil, unit_type: nil, count: 0, items: [] }
+          }
         end
-
-        # NEW: include exact comps and their URLs (used + candidates)
-        sources = Economics::Registry.sources(
-          building_name: resolved[:building_name],
-          unit_type: chosen[:unit_type]
-        )
-
-        lis = Listings::Registry.fetch(
-          building_name: resolved[:building_name],
-          unit_type: chosen[:unit_type],
-          limit: 6
-        )
-
-        render json: {
-          resolver: resolved,
-          selection: {
-            building_name: resolved[:building_name],
-            unit_type_requested: resolved[:unit_type],
-            unit_type_chosen: chosen[:unit_type],
-            reason: chosen[:reason],
-            available_units: chosen[:available_units]
-          },
-          economics: econ,
-          economics_sources: sources,
-          listings: lis
-        }
       else
         render json: {
           resolver: resolved,
-          economics: { status: "no_data", reason_code: "NOT_SUPPORTED", data: nil },
-          listings:  { status: "no_data", building_name: nil, unit_type: nil, count: 0, items: [] }
+          economics: { 
+            status: "no_data", 
+            reason_code: "NOT_SUPPORTED", 
+            data: nil, 
+            user_message: "Property not found in our Palm Jumeirah database" 
+          },
+          listings: { status: "no_data", building_name: nil, unit_type: nil, count: 0, items: [] }
         }
       end
+    rescue => e
+      Rails.logger.error "[AnalyzeController] Error: #{e.class}: #{e.message}\n#{e.backtrace.first(5).join("\n")}"
+      render json: { 
+        status: "error", 
+        error: "processing_failed",
+        message: "Failed to analyze property. Please try again."
+      }, status: 500
     end
 
     private
 
-    BUILDING_SYNONYMS = {
-      "fairmont palm residences" => [
-        "the fairmont palm residences",
-        "the fairmont palm residence south",
-        "the fairmont palm residence north",
-        "fairmont residences", "fairmont south", "fairmont north"
-      ],
-      "palm views"             => ["palm views east", "palm views west"],
-      "the palm tower"         => ["palm tower"],
-      "five palm jumeirah"     => ["five palm", "viceroy palm"],
-      "seven palm jumeirah"    => ["seven palm"],
-      "shoreline apartments"   => ["shoreline", "shoreline apartments palm"],
-      "oceana residences"      => ["oceana", "oceana palm"],
-      "marina residences"      => ["marina residences palm", "marina residences 1", "marina residences 6"]
-    }.freeze
-
-    def resolve_from_url(url, rows)
-      slug_tokens = tokens_from_url(url)
-      unit_guess = guess_unit_from_tokens(slug_tokens)
-
+    # Fuzzy match to find best building from CSV
+    def find_best_building_match(rows, query_building)
+      return nil if rows.empty?
+      
       csv_buildings = rows.map(&:building).uniq
-      candidates = csv_buildings.dup
-      BUILDING_SYNONYMS.each do |canon, syns|
-        if csv_buildings.any? { |b| canonical(b) == canonical(canon) }
-          candidates.concat(syns)
-        end
-      end
-
-      best_name, best_score = nil, 0.0
-      candidates.each do |nm|
-        score = jaccard(slug_tokens, canonical_tokens(nm))
-        if score > best_score
-          best_name  = nm
+      query_tokens = tokenize(query_building)
+      
+      best_match = nil
+      best_score = 0.0
+      
+      csv_buildings.each do |csv_building|
+        csv_tokens = tokenize(csv_building)
+        score = jaccard_similarity(query_tokens, csv_tokens)
+        
+        if score > best_score && score >= 0.4  # 40% threshold for controller
           best_score = score
+          best_match = csv_building
         end
       end
+      
+      best_match
+    end
 
-      resolved_csv =
-        if best_name && csv_buildings.map { |b| canonical(b) }.include?(canonical(best_name))
-          best_name
-        else
-          csv_buildings.find do |b|
-            syns = BUILDING_SYNONYMS[b.to_s.downcase] || []
-            syns.map { |s| canonical(s) }.include?(canonical(best_name))
-          end
-        end
+    def tokenize(building_name)
+      canonical(building_name)
+        .split(/\s+/)
+        .reject { |w| w.length < 2 }
+        .to_set
+    end
 
-      if resolved_csv
-        {
-          building_name: resolved_csv,
-          unit_type: unit_guess,
-          confidence: best_score.round(2),
-          facts: { source: "url_guess", matched: best_name }
-        }
-      else
-        { building_name: nil, unit_type: unit_guess, confidence: 0.0, facts: { source: "url_guess", matched: nil } }
+    def jaccard_similarity(tokens_a, tokens_b)
+      return 0.0 if tokens_a.empty? || tokens_b.empty?
+      
+      intersection = (tokens_a & tokens_b).size.to_f
+      union = (tokens_a | tokens_b).size.to_f
+      
+      intersection / union
+    end
+
+    def normalize_unit_type(raw_unit)
+      return nil if raw_unit.nil?
+      
+      s = raw_unit.to_s.downcase.strip
+      return "Studio" if s.include?("studio")
+      
+      if s.match?(/(\d+)\s*(bed|br|bhk)/)
+        num = s.match(/(\d+)\s*(bed|br|bhk)/)[1]
+        return "#{num}BR"
       end
+      
+      raw_unit
     end
 
     def choose_unit_for_building(rows, building_name, requested_unit)
@@ -126,52 +165,26 @@ module Api
       available_units = building_rows.map { |r| r.unit_type }.uniq
 
       if requested_unit && available_units.map { |u| canonical(u) }.include?(canonical(requested_unit))
-        return { unit_type: requested_unit, reason: "url_detected_and_available", available_units: available_units.sort }
+        return { 
+          unit_type: requested_unit, 
+          reason: "page_detected_and_available", 
+          available_units: available_units.sort 
+        }
       end
 
       freq = Hash.new(0)
       building_rows.each { |r| freq[r.unit_type] += 1 }
       best_unit = freq.max_by { |unit, count| [count, unit] }&.first || available_units.first || "1BR"
 
-      { unit_type: best_unit, reason: requested_unit ? "requested_not_available;defaulted_to_most_common" : "no_unit_in_url;defaulted_to_most_common", available_units: available_units.sort }
+      { 
+        unit_type: best_unit, 
+        reason: requested_unit ? "requested_not_available;defaulted_to_most_common" : "no_unit_detected;defaulted_to_most_common", 
+        available_units: available_units.sort 
+      }
     end
 
-    def tokens_from_url(url)
-      s = url.downcase
-      s = s.sub(/\Ahttps?:\/\//, "")
-      s = s.gsub(/[^\p{Alnum}\-\/_]+/, " ")
-      s.split(/[\/\-\_\s]+/).reject(&:blank?)
-    end
-
-    def canonical(s) = s.to_s.downcase.strip.gsub(/\s+/, " ")
-    def canonical_tokens(s) = canonical(s).split(/\s+/)
-
-    require "set"
-    def jaccard(a_tokens, b_tokens)
-      a = a_tokens.to_set
-      b = b_tokens.to_set
-      inter = (a & b).size
-      uni   = (a | b).size
-      uni.zero? ? 0.0 : inter.to_f / uni
-    end
-
-    def guess_unit_from_tokens(tokens)
-      joined = tokens.join(" ")
-      return "Studio" if joined.match?(/\bstudio\b/)
-      if (m = joined.match(/\b(\d)\s*(b\s*\/\s*r|br|bhk|bed|beds|bedroom|bedrooms)\b/))
-        return "#{m[1]}BR"
-      end
-      if (m = joined.match(/\b(\d)\s*(?:\w+\s*)?(bed|beds|bedroom|bedrooms)\b/))
-        return "#{m[1]}BR"
-      end
-      %w[one two three four].each_with_index do |w, idx|
-        n = idx + 1
-        if joined.match?(/\b#{Regexp.escape(w)}\s*-\s*(bed|beds|bedroom|bedrooms)\b/) ||
-           joined.match?(/\b#{Regexp.escape(w)}\s*(bed|beds|bedroom|bedrooms)\b/)
-          return "#{n}BR"
-        end
-      end
-      nil
+    def canonical(s)
+      s.to_s.downcase.strip.gsub(/\s+/, " ")
     end
   end
 end

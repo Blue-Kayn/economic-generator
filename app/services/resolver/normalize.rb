@@ -26,19 +26,33 @@ module Resolver
       nil
     end
 
-    # Given a long building/title string, collapse to a known alias/canonical.
+    # Given a long building/title string, collapse to a clean building name
+    # Strips common PropertyFinder/Bayut prefixes and suffixes
     def normalize_building(raw)
       return nil if raw.nil?
-      str = raw.strip.downcase
-
-      # Known patterns
-      return "Palm Views"  if str.include?("palm views")
-      return "Palm Tower"  if str.include?("palm tower")
-      return "Seven Palm"  if str.include?("seven palm")
-      return "Shoreline"   if str.include?("shoreline")
-
-      # Fallback: truncate to first 5 words
-      raw.split(/\s+/)[0..4].join(" ")
+      str = raw.strip
+      
+      # Strip common prefixes (case insensitive)
+      str = str.sub(/\A(rent in|for rent in|for sale in|buy in|apartment (for )?(rent|sale) in)\s+/i, '')
+      
+      # Strip everything after | or : (usually property features/descriptions)
+      str = str.split(/\s*[\|:]\s*/).first || str
+      
+      # Strip trailing " | Property Finder" or similar
+      str = str.sub(/\s*\|\s*property\s*finder\s*\z/i, '')
+      str = str.sub(/\s*-\s*property\s*finder\s*\z/i, '')
+      
+      # Strip "Apartment" or "Villa" at the start if followed by "in"
+      str = str.sub(/\A(apartment|villa|townhouse|penthouse)\s+(in\s+)?/i, '')
+      
+      # Clean up whitespace
+      str = str.strip.gsub(/\s+/, ' ')
+      
+      # If we ended up with something too short or generic, return nil
+      return nil if str.length < 3
+      return nil if str.downcase.match?(/\A(dubai|palm jumeirah|jumeirah)\z/)
+      
+      str
     end
   end
 end

@@ -9,67 +9,123 @@
     <%= javascript_include_tag "application", "data-turbo-track": "reload", defer: true %>
     <style>
       body {
-        font-family: sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         background-color: #0f172a;
         color: #f9fafb;
-        margin: 2rem;
+        margin: 0;
+        padding: 2rem;
       }
       h1 {
         font-size: 1.8rem;
         margin-bottom: 1rem;
       }
+      .input-row {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 2rem;
+      }
       input[type="text"] {
-        width: 70%;
-        padding: 0.5em;
-        border-radius: 6px;
-        border: none;
-        margin-right: 0.5em;
+        flex: 1;
+        padding: 0.75rem;
+        border-radius: 8px;
+        border: 1px solid #374151;
+        background: #1f2937;
+        color: #f9fafb;
+        font-size: 14px;
       }
       button {
-        padding: 0.6em 1.2em;
+        padding: 0.75rem 1.5rem;
         background-color: #3b82f6;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         color: white;
-        font-weight: bold;
+        font-weight: 600;
         cursor: pointer;
+        transition: background 0.2s;
       }
       button:hover {
         background-color: #2563eb;
       }
-      .summary {
+      .section {
         background: #111827;
-        padding: 1em;
-        border-radius: 8px;
-        margin-top: 1em;
-        margin-bottom: 1em;
+        padding: 1.5rem;
+        border-radius: 12px;
+        margin-bottom: 1.5rem;
+        border: 1px solid #1f2937;
       }
-      .listings {
-        background: #1f2937;
-        padding: 1em;
-        border-radius: 8px;
-        margin-top: 1em;
+      .section h3 {
+        margin-top: 0;
+        color: #60a5fa;
+        font-size: 1.1rem;
       }
-      .listings table {
+      .data-grid {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 0.75rem;
+        margin-top: 1rem;
+      }
+      .data-label {
+        color: #9ca3af;
+        font-size: 0.9rem;
+      }
+      .data-value {
+        color: #f9fafb;
+        font-weight: 500;
+      }
+      .highlight {
+        color: #34d399;
+        font-size: 1.2rem;
+        font-weight: 600;
+      }
+      table {
         width: 100%;
         border-collapse: collapse;
+        margin-top: 1rem;
       }
-      .listings th, .listings td {
-        padding: 0.5em;
+      th {
         text-align: left;
-        border-bottom: 1px solid #374151;
+        padding: 0.75rem;
+        background: #1f2937;
+        color: #9ca3af;
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
       }
-      .listings a {
-        color: #3b82f6;
+      td {
+        padding: 0.75rem;
+        border-bottom: 1px solid #1f2937;
+      }
+      td a {
+        color: #60a5fa;
+        text-decoration: none;
+      }
+      td a:hover {
+        text-decoration: underline;
+      }
+      .error-message {
+        background: #7f1d1d;
+        color: #fecaca;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        background: #1f2937;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        color: #9ca3af;
       }
     </style>
   </head>
   <body>
     <h1>Analyze a Property Link</h1>
-    <p>Paste a PF/Bayut/Dubizzle URL. We'll resolve the building & unit, compute economics, and show the Airbnb comps we used.</p>
+    <p style="color: #9ca3af; margin-bottom: 2rem;">Paste a PropertyFinder, Bayut, or Dubizzle URL to see rental economics</p>
 
-    <div>
-      <input type="text" id="url" placeholder="Paste a link here" />
+    <div class="input-row">
+      <input type="text" id="url" placeholder="https://www.propertyfinder.ae/..." />
       <button onclick="runAnalyze()">Analyze</button>
     </div>
 
@@ -77,76 +133,125 @@
 
     <script>
       async function runAnalyze() {
-        const url = document.getElementById("url").value;
-        const res = await fetch(`/api/analyze/link?url=${encodeURIComponent(url)}`);
-        const data = await res.json();
-
-        const resultBox = document.getElementById("result");
-        resultBox.innerHTML = "";
-
-        // ECONOMICS SUMMARY
-        if (data.economics && data.economics.status === "ok") {
-          const econ = data.economics.data;
-          resultBox.innerHTML += `
-            <div class="summary">
-              <h3>Economics (p50) · Building: ${econ.building} · Unit: ${econ.unit_type}</h3>
-              <p><b>Yearly Revenue Potential</b>: AED ${econ.rev_p50.toLocaleString()}</p>
-              <p><b>Average Yearly Occupancy</b>: ${econ.occ_p50.toFixed(1)}%</p>
-              <p><b>Average Daily Rate throughout the Year</b>: AED ${econ.adr_p50.toFixed(0)}</p>
-              <small>Sample used: ${econ.sample_n} (min ≥ ${econ.min_avail_days_applied} days)</small>
-            </div>
-          `;
+        const url = document.getElementById("url").value.trim();
+        if (!url) {
+          alert("Please enter a URL");
+          return;
         }
 
-        // --- MERGE LISTINGS ---
-        const econListings = data.economics && data.economics.listings ? data.economics.listings : [];
-        const urlListings = (data.listings && data.listings.items) ? data.listings.items : [];
+        const resultBox = document.getElementById("result");
+        resultBox.innerHTML = "<p>Loading...</p>";
 
-        // join by airbnb_id
-        const merged = econListings.map(l => {
-          const match = urlListings.find(u => u.airbnb_id === l.airbnb_id);
-          return {
-            ...l,
-            airbnb_url: match ? match.airbnb_url : null
-          };
-        });
+        try {
+          const res = await fetch(`/api/analyze/link?url=${encodeURIComponent(url)}`);
+          const data = await res.json();
 
-        // LISTINGS TABLE
-        if (merged.length > 0) {
-          let html = `
-            <div class="listings">
-              <h3>Listings Used</h3>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Airbnb ID</th>
-                    <th>ADR (AED)</th>
-                    <th>Occupancy %</th>
-                    <th>Revenue Potential (AED)</th>
-                    <th>Mode</th>
-                    <th>Link</th>
-                  </tr>
-                </thead>
-                <tbody>
-          `;
-          merged.forEach(item => {
-            html += `
-              <tr>
-                <td>${item.airbnb_id || "-"}</td>
-                <td>${item.adr ? item.adr.toFixed(0) : "-"}</td>
-                <td>${item.occ ? item.occ.toFixed(1) : "-"}</td>
-                <td>${item.rev_potential ? item.rev_potential.toLocaleString() : "-"}</td>
-                <td>${item.mode || "-"}</td>
-                <td>${item.airbnb_url ? `<a href="${item.airbnb_url}" target="_blank">Airbnb</a>` : ""}</td>
-              </tr>
+          resultBox.innerHTML = "";
+
+          // PROPERTY DETAILS
+          if (data.resolver) {
+            const r = data.resolver;
+            resultBox.innerHTML += `
+              <div class="section">
+                <h3>Property Details</h3>
+                <div class="data-grid">
+                  <div class="data-label">Building</div>
+                  <div class="data-value">${r.building_name || "Not detected"}</div>
+                  <div class="data-label">Unit Type</div>
+                  <div class="data-value">${r.unit_type || "Not detected"}</div>
+                  <div class="data-label">Bedrooms</div>
+                  <div class="data-value">${r.facts?.bedrooms || "-"}</div>
+                  <div class="data-label">Bathrooms</div>
+                  <div class="data-value">${r.facts?.bathrooms || "-"}</div>
+                  <div class="data-label">Size</div>
+                  <div class="data-value">${r.facts?.size || "-"}</div>
+                </div>
+              </div>
             `;
-          });
-          html += `
-                </tbody>
-              </table>
-            </div>
-          `;
-          resultBox.innerHTML += html;
+          }
+
+          // ECONOMICS
+          if (data.economics) {
+            if (data.economics.status === "ok" && data.economics.data) {
+              const econ = data.economics.data;
+              resultBox.innerHTML += `
+                <div class="section">
+                  <h3>Rental Economics (Median Projection)</h3>
+                  <div class="data-grid">
+                    <div class="data-label">Projected Annual Revenue</div>
+                    <div class="data-value highlight">AED ${econ.rev_p50.toLocaleString()}</div>
+                    <div class="data-label">Projected Yearly Occupancy</div>
+                    <div class="data-value">${econ.occ_p50.toFixed(1)}%</div>
+                    <div class="data-label">Projected Average Daily Rate</div>
+                    <div class="data-value">AED ${econ.adr_p50.toLocaleString()}</div>
+                    <div class="data-label">Sample Size</div>
+                    <div class="data-value">
+                      ${econ.sample_n} comparable listings
+                      ${econ.truth_count > 0 ? `<span class="badge">${econ.truth_count} with 365-day data</span>` : ''}
+                    </div>
+                    <div class="data-label">Data Date</div>
+                    <div class="data-value">${econ.data_snapshot_date}</div>
+                  </div>
+                </div>
+              `;
+            } else {
+              resultBox.innerHTML += `
+                <div class="error-message">
+                  <strong>No Economics Data Available</strong><br>
+                  ${data.economics.user_message || "Insufficient sample data"}
+                </div>
+              `;
+            }
+          }
+
+          // LISTINGS TABLE
+          if (data.economics && data.economics.listings && data.economics.listings.length > 0) {
+            let html = `
+              <div class="section">
+                <h3>Comparable Listings Used</h3>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Airbnb ID</th>
+                      <th>Days Available</th>
+                      <th>Actual Occupancy</th>
+                      <th>Actual ADR</th>
+                      <th>Actual Revenue</th>
+                      <th>Projected Occupancy</th>
+                      <th>Projected ADR</th>
+                      <th>Projected Revenue</th>
+                      <th>Link</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+            `;
+            
+            data.economics.listings.forEach(item => {
+              html += `
+                <tr>
+                  <td>${item.airbnb_id}</td>
+                  <td>${item.days_available}</td>
+                  <td>${item.raw_occ ? item.raw_occ.toFixed(1) + "%" : "-"}</td>
+                  <td>AED ${item.raw_adr ? item.raw_adr.toFixed(0) : "-"}</td>
+                  <td>AED ${item.raw_revenue ? item.raw_revenue.toLocaleString() : "-"}</td>
+                  <td>${item.projected_occ_365 ? item.projected_occ_365.toFixed(1) + "%" : "-"}</td>
+                  <td>AED ${item.projected_adr_365 ? item.projected_adr_365.toFixed(0) : "-"}</td>
+                  <td>AED ${item.projected_rev_365 ? item.projected_rev_365.toLocaleString() : "-"}</td>
+                  <td><a href="${item.airbnb_url}" target="_blank">View</a></td>
+                </tr>
+              `;
+            });
+            
+            html += `
+                  </tbody>
+                </table>
+              </div>
+            `;
+            resultBox.innerHTML += html;
+          }
+
+        } catch (e) {
+          resultBox.innerHTML = `<div class="error-message">Error: ${e.message}</div>`;
         }
       }
     </script>
