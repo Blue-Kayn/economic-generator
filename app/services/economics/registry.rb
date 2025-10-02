@@ -75,7 +75,7 @@ module Economics
               airbnb_url: r[:airbnb_url],
               airdna_url: airdna_url(r[:airbnb_id]),
               days_available: r[:days_available],
-              raw_revenue: r[:revenue],
+              raw_revenue: normalize_revenue(r[:revenue]),
               raw_adr: r[:adr],
               raw_occ: r[:occupancy]
             }
@@ -84,6 +84,18 @@ module Economics
       end
 
       private
+
+      # Normalize ONLY revenue values - convert millions to full numbers
+      # Only applies to revenue, not ADR, occupancy, or any other metric
+      def normalize_revenue(revenue_value)
+        rev = revenue_value.to_f
+        # If revenue is less than 100, it's in millions (e.g., 1.1 = 1.1M)
+        if rev > 0 && rev < 100
+          (rev * 1_000_000).round(0)
+        else
+          rev.round(0)
+        end
+      end
 
       # Fuzzy match building name against all buildings in CSV
       # Returns the best matching building name from CSV, or nil if no good match
@@ -132,7 +144,7 @@ module Economics
         raw_adr = row[:adr].to_f
         raw_occ = row[:occupancy].to_f
         raw_occ = raw_occ * 100 if raw_occ <= 1.0
-        raw_revenue = row[:revenue].to_f
+        raw_revenue = normalize_revenue(row[:revenue])  # ONLY normalize revenue
         
         if days >= 365
           return {
@@ -299,10 +311,10 @@ module Economics
             airbnb_url: airbnb_url.to_s.strip,
             building: building.to_s.strip,
             unit_type: normalize_unit_from_bedrooms(bedrooms),
-            revenue: to_f(revenue),
-            occupancy: to_f(occupancy),
-            days_available: to_i(days_available),
-            adr: to_f(adr)
+            revenue: to_f(revenue),  # Keep raw value, normalize_revenue handles conversion
+            occupancy: to_f(occupancy),  # Never converted
+            days_available: to_i(days_available),  # Never converted
+            adr: to_f(adr)  # Never converted
           }
         end
         

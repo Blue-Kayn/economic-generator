@@ -15,6 +15,7 @@ module Resolver
       bedrooms = nil
       bathrooms = nil
       size = nil
+      yearly_rent = nil
       facts = {}
 
       # 1) Try LD-JSON first
@@ -29,6 +30,21 @@ module Resolver
             building ||= name
             unit_type ||= Resolver::Normalize.unit_type_from_text("#{name} #{desc}")
             facts[:address] ||= p["address"] if p["address"]
+            
+            # Try to get bathrooms from structured data
+            if p["numberOfBathroomsTotal"]
+              bathrooms = p["numberOfBathroomsTotal"].to_i
+              facts[:bathrooms] = bathrooms
+            end
+            
+            # Try to get price from structured data
+            if p["offers"] && p["offers"]["price"]
+              price = p["offers"]["price"].to_s.gsub(/[^\d]/, '').to_i
+              if price >= 10_000 && price <= 10_000_000
+                yearly_rent = price
+                facts[:yearly_rent] = yearly_rent
+              end
+            end
           end
         rescue
           next
@@ -45,7 +61,6 @@ module Resolver
       end
 
       # 3) Extract bedrooms, bathrooms, size from PropertyFinder's property details section
-      # PropertyFinder displays these as: "Bedrooms1", "Bathrooms2", "Property Size715 sqft"
       
       # Find bedrooms
       bedroom_node = doc.css('*').find { |node| node.text.match?(/Bedrooms\s*\d+/i) }
@@ -55,20 +70,94 @@ module Resolver
         facts[:bedrooms] = bedrooms
       end
 
-      # Find bathrooms
-      bathroom_node = doc.css('*').find { |node| node.text.match?(/Bathrooms\s*\d+/i) }
-      if bathroom_node && (m = bathroom_node.text.match(/Bathrooms\s*(\d+)/i))
-        bathrooms = m[1].to_i
-        facts[:bathrooms] = bathrooms
+      # Find bathrooms - improved multi-strategy approach
+      if bathrooms.nil?
+        # Strategy 1: Look in property details/features sections specifically
+        doc.css('[class*="property"], [class*="feature"], [class*="detail"], main, [role="main"]').each do |section|
+          section_text = section.text
+          matches = section_text.scan(/Bathrooms?\s*:?\s*(\d+)/i)
+          if matches.any?
+            bathrooms = matches.last[0].to_i
+            facts[:bathrooms] = bathrooms
+            break
+          end
+        end
+      end
+
+      # Strategy 2: If still not found, look for the specific pattern in full page
+      if bathrooms.nil?
+        full_text = doc.text
+        bathroom_mentions = full_text.scan(/Bathrooms?\s*:?\s*(\d+)/i).flatten.map(&:to_i)
+        if bathroom_mentions.any?
+          bathrooms = bathroom_mentions.group_by(&:itself).values.max_by(&:size)&.first || bathroom_mentions.last
+          facts[:bathrooms] = bathrooms
+        end
       end
 
       # Find property size (sqft or sqm)
       size_node = doc.css('*').find { |node| node.text.match?(/Property\s*Size\s*[\d,]+\s*(sqft|sqm)/i) }
       if size_node && (m = size_node.text.match(/Property\s*Size\s*([\d,]+)\s*(sqft|sqm)/i))
-        size_value = m[1].gsub(',', '')
+        size_value = m[1].gsub(',', '').to_i
         size_unit = m[2].downcase
         size = "#{size_value} #{size_unit}"
         facts[:size] = size
+        facts[:size_sqft] = size_unit == "sqft" ? size_value : (size_value * 10.764).round(0)
+      end
+
+      # Find yearly rent - IMPROVED with multiple strategies
+      if yearly_rent.nil?
+        full_text = doc.text
+        
+        # Strategy 1: Look for explicit "Yearly" or "per year" mentions
+        rent_patterns = [
+          /AED\s*([\d,]+)\s*(?:\/\s*)?(?:per\s+)?year/i,
+          /AED\s*([\d,]+)\s*yearly/i,
+          /([\d,]+)\s*AED\s*(?:\/\s*)?(?:per\s+)?year/i,
+          /([\d,]+)\s*AED\s*yearly/i,
+          /Price.*?AED\s*([\d,]+)/i,
+          /Rent.*?AED\s*([\d,]+)/i
+        ]
+        
+        rent_patterns.each do |pattern|
+          if (m = full_text.match(pattern))
+            rent_value = m[1].gsub(',', '').to_i
+            # Sanity check: yearly rent should be between 10k and 10M AED
+            if rent_value >= 10_000 && rent_value <= 10_000_000
+              yearly_rent = rent_value
+              facts[:yearly_rent] = yearly_rent
+              break
+            end
+          end
+        end
+      end
+
+      # Strategy 2: Look in meta tags for price
+      if yearly_rent.nil?
+        price_meta = doc.at('meta[property="product:price:amount"]')&.[]("content") ||
+                     doc.at('meta[property="og:price:amount"]')&.[]("content")
+        if price_meta
+          rent_value = price_meta.gsub(/[^\d]/, '').to_i
+          if rent_value >= 10_000 && rent_value <= 10_000_000
+            yearly_rent = rent_value
+            facts[:yearly_rent] = yearly_rent
+          end
+        end
+      end
+
+      # Strategy 3: Find any large AED amount that looks like rent
+      if yearly_rent.nil?
+        # Look for price elements or divs
+        doc.css('[class*="price"], [class*="amount"], [data-testid*="price"]').each do |node|
+          text = node.text
+          if (m = text.match(/AED\s*([\d,]+)/i)) || (m = text.match(/([\d,]+)\s*AED/i))
+            rent_value = m[1].gsub(',', '').to_i
+            if rent_value >= 10_000 && rent_value <= 10_000_000
+              yearly_rent = rent_value
+              facts[:yearly_rent] = yearly_rent
+              break
+            end
+          end
+        end
       end
 
       # 4) Meta description fallback

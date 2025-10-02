@@ -22,7 +22,7 @@
       .input-row {
         display: flex;
         gap: 0.5rem;
-        margin-bottom: 2rem;
+        margin-bottom: 1rem;
       }
       input[type="text"] {
         flex: 1;
@@ -32,6 +32,30 @@
         background: #1f2937;
         color: #f9fafb;
         font-size: 14px;
+      }
+      .mode-selector {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 2rem;
+      }
+      .mode-btn {
+        flex: 1;
+        padding: 0.75rem 1.5rem;
+        background-color: #374151;
+        border: 2px solid transparent;
+        border-radius: 8px;
+        color: #9ca3af;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .mode-btn:hover {
+        background-color: #4b5563;
+      }
+      .mode-btn.active {
+        background-color: #3b82f6;
+        border-color: #60a5fa;
+        color: white;
       }
       button {
         padding: 0.75rem 1.5rem;
@@ -77,6 +101,46 @@
         font-size: 1.2rem;
         font-weight: 600;
       }
+      .profit {
+        color: #34d399;
+      }
+      .loss {
+        color: #f87171;
+      }
+      .breakdown-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        padding: 0.5rem 0;
+        border-bottom: 1px solid #1f2937;
+      }
+      .breakdown-row.total {
+        border-top: 2px solid #60a5fa;
+        border-bottom: 2px solid #60a5fa;
+        padding-top: 1rem;
+        margin-top: 1rem;
+        font-weight: 700;
+        font-size: 1.1rem;
+      }
+      .breakdown-label {
+        color: #d1d5db;
+      }
+      .breakdown-value {
+        color: #f9fafb;
+        font-weight: 600;
+        text-align: right;
+      }
+      .breakdown-value.negative {
+        color: #f87171;
+      }
+      .breakdown-value.positive {
+        color: #34d399;
+      }
+      .note {
+        color: #9ca3af;
+        font-size: 0.85rem;
+        font-style: italic;
+        margin-left: 0.5rem;
+      }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -110,6 +174,13 @@
         border-radius: 8px;
         margin-bottom: 1rem;
       }
+      .warning-message {
+        background: #78350f;
+        color: #fcd34d;
+        padding: 1rem;
+        border-radius: 8px;
+        margin-bottom: 1rem;
+      }
       .badge {
         display: inline-block;
         padding: 0.25rem 0.5rem;
@@ -129,9 +200,32 @@
       <button onclick="runAnalyze()">Analyze</button>
     </div>
 
+    <div class="mode-selector">
+      <button class="mode-btn active" id="investmentBtn" onclick="selectMode('investment')">
+        Investment Analysis
+      </button>
+      <button class="mode-btn" id="subleaseBtn" onclick="selectMode('sublease')">
+        Sublease Profitability
+      </button>
+    </div>
+
     <div id="result"></div>
 
     <script>
+      let currentMode = 'investment';
+      let lastData = null;
+
+      function selectMode(mode) {
+        currentMode = mode;
+        document.getElementById('investmentBtn').classList.toggle('active', mode === 'investment');
+        document.getElementById('subleaseBtn').classList.toggle('active', mode === 'sublease');
+        
+        // Re-render if we already have data
+        if (lastData) {
+          renderResults(lastData);
+        }
+      }
+
       async function runAnalyze() {
         const url = document.getElementById("url").value.trim();
         if (!url) {
@@ -145,113 +239,225 @@
         try {
           const res = await fetch(`/api/analyze/link?url=${encodeURIComponent(url)}`);
           const data = await res.json();
+          lastData = data;
+          renderResults(data);
+        } catch (e) {
+          document.getElementById("result").innerHTML = `<div class="error-message">Error: ${e.message}</div>`;
+        }
+      }
 
-          resultBox.innerHTML = "";
+      function renderResults(data) {
+        const resultBox = document.getElementById("result");
+        resultBox.innerHTML = "";
 
-          // PROPERTY DETAILS
-          if (data.resolver) {
-            const r = data.resolver;
+        // PROPERTY DETAILS
+        if (data.resolver) {
+          const r = data.resolver;
+          resultBox.innerHTML += `
+            <div class="section">
+              <h3>Property Details</h3>
+              <div class="data-grid">
+                <div class="data-label">Building</div>
+                <div class="data-value">${r.building_name || "Not detected"}</div>
+                <div class="data-label">Unit Type</div>
+                <div class="data-value">${r.unit_type || "Not detected"}</div>
+                <div class="data-label">Bedrooms</div>
+                <div class="data-value">${r.facts?.bedrooms ?? "-"}</div>
+                <div class="data-label">Bathrooms</div>
+                <div class="data-value">${r.facts?.bathrooms ?? "-"}</div>
+                <div class="data-label">Size</div>
+                <div class="data-value">${r.facts?.size || "-"}</div>
+                ${r.facts?.yearly_rent ? `
+                  <div class="data-label">Yearly Rent</div>
+                  <div class="data-value">AED ${r.facts.yearly_rent.toLocaleString()}</div>
+                ` : ''}
+              </div>
+            </div>
+          `;
+        }
+
+        // ECONOMICS (ALWAYS SHOW)
+        if (data.economics) {
+          if (data.economics.status === "ok" && data.economics.data) {
+            const econ = data.economics.data;
+            const resolver = data.resolver;
+
+            // RENTAL ECONOMICS SECTION (shown in both modes)
             resultBox.innerHTML += `
               <div class="section">
-                <h3>Property Details</h3>
+                <h3>Rental Economics (Median Projection)</h3>
                 <div class="data-grid">
-                  <div class="data-label">Building</div>
-                  <div class="data-value">${r.building_name || "Not detected"}</div>
-                  <div class="data-label">Unit Type</div>
-                  <div class="data-value">${r.unit_type || "Not detected"}</div>
-                  <div class="data-label">Bedrooms</div>
-                  <div class="data-value">${r.facts?.bedrooms || "-"}</div>
-                  <div class="data-label">Bathrooms</div>
-                  <div class="data-value">${r.facts?.bathrooms || "-"}</div>
-                  <div class="data-label">Size</div>
-                  <div class="data-value">${r.facts?.size || "-"}</div>
+                  <div class="data-label">Projected Annual Revenue</div>
+                  <div class="data-value highlight">AED ${econ.rev_p50.toLocaleString()}</div>
+                  <div class="data-label">Projected Yearly Occupancy</div>
+                  <div class="data-value">${econ.occ_p50.toFixed(1)}%</div>
+                  <div class="data-label">Projected Average Daily Rate</div>
+                  <div class="data-value">AED ${econ.adr_p50.toLocaleString()}</div>
+                  <div class="data-label">Sample Size</div>
+                  <div class="data-value">
+                    ${econ.sample_n} comparable listings
+                    ${econ.truth_count > 0 ? `<span class="badge">${econ.truth_count} with 365-day data</span>` : ''}
+                  </div>
+                  <div class="data-label">Data Date</div>
+                  <div class="data-value">${econ.data_snapshot_date}</div>
                 </div>
               </div>
             `;
-          }
 
-          // ECONOMICS
-          if (data.economics) {
-            if (data.economics.status === "ok" && data.economics.data) {
-              const econ = data.economics.data;
-              resultBox.innerHTML += `
+            // SUBLEASE PROFITABILITY (only in sublease mode)
+            if (currentMode === 'sublease') {
+              const grossRevenue = econ.rev_p50;
+              const platformFee = Math.round(grossRevenue * 0.15);
+              const afterPlatformFee = grossRevenue - platformFee;
+              
+              // Calculate utilities
+              const sizeSqft = resolver.facts?.size_sqft || 0;
+              const utilities = sizeSqft > 0 ? Math.round(17.5 * sizeSqft) : null;
+              
+              // Calculate tourism dirham (12.5 AED per night occupied)
+              const occupancyRate = econ.occ_p50 / 100;
+              const nightsOccupied = Math.round(365 * occupancyRate);
+              const tourismDirham = Math.round(12.5 * nightsOccupied);
+              
+              // Get yearly rent
+              const yearlyRent = resolver.facts?.yearly_rent || null;
+              
+              // Calculate net profit
+              let netProfit = afterPlatformFee - (utilities || 0) - tourismDirham - (yearlyRent || 0);
+              
+              let breakdownHTML = `
                 <div class="section">
-                  <h3>Rental Economics (Median Projection)</h3>
-                  <div class="data-grid">
-                    <div class="data-label">Projected Annual Revenue</div>
-                    <div class="data-value highlight">AED ${econ.rev_p50.toLocaleString()}</div>
-                    <div class="data-label">Projected Yearly Occupancy</div>
-                    <div class="data-value">${econ.occ_p50.toFixed(1)}%</div>
-                    <div class="data-label">Projected Average Daily Rate</div>
-                    <div class="data-value">AED ${econ.adr_p50.toLocaleString()}</div>
-                    <div class="data-label">Sample Size</div>
-                    <div class="data-value">
-                      ${econ.sample_n} comparable listings
-                      ${econ.truth_count > 0 ? `<span class="badge">${econ.truth_count} with 365-day data</span>` : ''}
-                    </div>
-                    <div class="data-label">Data Date</div>
-                    <div class="data-value">${econ.data_snapshot_date}</div>
+                  <h3>Sublease Profitability Analysis</h3>
+                  
+                  <div class="breakdown-row">
+                    <div class="breakdown-label">Gross Airbnb Revenue</div>
+                    <div class="breakdown-value">AED ${grossRevenue.toLocaleString()}</div>
                   </div>
+                  
+                  <div class="breakdown-row">
+                    <div class="breakdown-label">- Platform Fee (15%)</div>
+                    <div class="breakdown-value negative">- AED ${platformFee.toLocaleString()}</div>
+                  </div>
+              `;
+
+              if (utilities) {
+                breakdownHTML += `
+                  <div class="breakdown-row">
+                    <div class="breakdown-label">- Utilities <span class="note">(17.5 AED/sqft - rough estimate)</span></div>
+                    <div class="breakdown-value negative">- AED ${utilities.toLocaleString()}</div>
+                  </div>
+                `;
+              } else {
+                breakdownHTML += `
+                  <div class="warning-message">
+                    ⚠️ Property size not detected - utilities calculation unavailable
+                  </div>
+                `;
+              }
+
+              breakdownHTML += `
+                <div class="breakdown-row">
+                  <div class="breakdown-label">- Tourism Dirham <span class="note">(12.5 AED × ${nightsOccupied} nights)</span></div>
+                  <div class="breakdown-value negative">- AED ${tourismDirham.toLocaleString()}</div>
                 </div>
               `;
-            } else {
+
+              if (yearlyRent) {
+                breakdownHTML += `
+                  <div class="breakdown-row">
+                    <div class="breakdown-label">- Yearly Rent</div>
+                    <div class="breakdown-value negative">- AED ${yearlyRent.toLocaleString()}</div>
+                  </div>
+                `;
+              } else {
+                breakdownHTML += `
+                  <div class="warning-message">
+                    ⚠️ Yearly rent not detected from listing - profitability calculation incomplete
+                  </div>
+                `;
+              }
+
+              const profitClass = netProfit >= 0 ? 'profit' : 'loss';
+              const profitLabel = netProfit >= 0 ? 'Net Annual Profit' : 'Net Annual Loss';
+
+              breakdownHTML += `
+                <div class="breakdown-row total">
+                  <div class="breakdown-label">${profitLabel}</div>
+                  <div class="breakdown-value ${profitClass}" style="font-size: 1.4rem; font-weight: 700;">AED ${Math.abs(netProfit).toLocaleString()}</div>
+                </div>
+              </div>
+              `;
+
+              resultBox.innerHTML += breakdownHTML;
+
+              // Add assumptions note
               resultBox.innerHTML += `
-                <div class="error-message">
-                  <strong>No Economics Data Available</strong><br>
-                  ${data.economics.user_message || "Insufficient sample data"}
+                <div class="section">
+                  <h3>Assumptions & Notes</h3>
+                  <p style="color: #9ca3af; font-size: 0.9rem; line-height: 1.6;">
+                    • Platform fees (15%) include Airbnb/booking.com commissions<br>
+                    • Utilities calculated at 17.5 AED/sqft annually (rough estimate - actual may vary)<br>
+                    • Tourism Dirham is 12.5 AED per night occupied<br>
+                    • Does not include: maintenance, furnishing costs, management fees, DEWA deposits<br>
+                    • Based on median (p50) projections from ${econ.sample_n} comparable listings
+                  </p>
                 </div>
               `;
             }
-          }
-
-          // LISTINGS TABLE
-          if (data.economics && data.economics.listings && data.economics.listings.length > 0) {
-            let html = `
-              <div class="section">
-                <h3>Comparable Listings Used</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Airbnb ID</th>
-                      <th>Days Available</th>
-                      <th>Actual Occupancy</th>
-                      <th>Actual ADR</th>
-                      <th>Actual Revenue</th>
-                      <th>Projected Occupancy</th>
-                      <th>Projected ADR</th>
-                      <th>Projected Revenue</th>
-                      <th>Link</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-            `;
-            
-            data.economics.listings.forEach(item => {
-              html += `
-                <tr>
-                  <td>${item.airbnb_id}</td>
-                  <td>${item.days_available}</td>
-                  <td>${item.raw_occ ? item.raw_occ.toFixed(1) + "%" : "-"}</td>
-                  <td>AED ${item.raw_adr ? item.raw_adr.toFixed(0) : "-"}</td>
-                  <td>AED ${item.raw_revenue ? item.raw_revenue.toLocaleString() : "-"}</td>
-                  <td>${item.projected_occ_365 ? item.projected_occ_365.toFixed(1) + "%" : "-"}</td>
-                  <td>AED ${item.projected_adr_365 ? item.projected_adr_365.toFixed(0) : "-"}</td>
-                  <td>AED ${item.projected_rev_365 ? item.projected_rev_365.toLocaleString() : "-"}</td>
-                  <td><a href="${item.airbnb_url}" target="_blank">View</a></td>
-                </tr>
-              `;
-            });
-            
-            html += `
-                  </tbody>
-                </table>
+          } else {
+            resultBox.innerHTML += `
+              <div class="error-message">
+                <strong>No Economics Data Available</strong><br>
+                ${data.economics.user_message || "Insufficient sample data"}
               </div>
             `;
-            resultBox.innerHTML += html;
           }
+        }
 
-        } catch (e) {
-          resultBox.innerHTML = `<div class="error-message">Error: ${e.message}</div>`;
+        // LISTINGS TABLE (always show regardless of mode)
+        if (data.economics && data.economics.listings && data.economics.listings.length > 0) {
+          let html = `
+            <div class="section">
+              <h3>Comparable Listings Used</h3>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Airbnb ID</th>
+                    <th>Days Available</th>
+                    <th>Actual Occupancy</th>
+                    <th>Actual ADR</th>
+                    <th>Actual Revenue</th>
+                    <th>Projected Occupancy</th>
+                    <th>Projected ADR</th>
+                    <th>Projected Revenue</th>
+                    <th>Link</th>
+                  </tr>
+                </thead>
+                <tbody>
+          `;
+          
+          data.economics.listings.forEach(item => {
+            html += `
+              <tr>
+                <td>${item.airbnb_id}</td>
+                <td>${item.days_available}</td>
+                <td>${item.raw_occ ? item.raw_occ.toFixed(1) + "%" : "-"}</td>
+                <td>AED ${item.raw_adr ? item.raw_adr.toFixed(0) : "-"}</td>
+                <td>AED ${item.raw_revenue ? item.raw_revenue.toLocaleString() : "-"}</td>
+                <td>${item.projected_occ_365 ? item.projected_occ_365.toFixed(1) + "%" : "-"}</td>
+                <td>AED ${item.projected_adr_365 ? item.projected_adr_365.toFixed(0) : "-"}</td>
+                <td>AED ${item.projected_rev_365 ? item.projected_rev_365.toLocaleString() : "-"}</td>
+                <td><a href="${item.airbnb_url}" target="_blank">View</a></td>
+              </tr>
+            `;
+          });
+          
+          html += `
+                </tbody>
+              </table>
+            </div>
+          `;
+          resultBox.innerHTML += html;
         }
       }
     </script>
