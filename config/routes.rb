@@ -6,6 +6,7 @@ Rails.application.routes.draw do
 
   # API namespace (browser + programmatic)
   namespace :api, defaults: { format: :json } do
+    get '/health', to: 'health#show'
     # Listings & Economics (GET for browser, POST for programmatic)
     match "listings/lookup",   to: "listings#lookup",   via: [:get, :post]
     match "economics/lookup",  to: "economics#lookup",  via: [:get, :post]

@@ -31,13 +31,11 @@ module Resolver
             unit_type ||= Resolver::Normalize.unit_type_from_text("#{name} #{desc}")
             facts[:address] ||= p["address"] if p["address"]
             
-            # Try to get bathrooms from structured data
             if p["numberOfBathroomsTotal"]
               bathrooms = p["numberOfBathroomsTotal"].to_i
               facts[:bathrooms] = bathrooms
             end
             
-            # Try to get price from structured data
             if p["offers"] && p["offers"]["price"]
               price = p["offers"]["price"].to_s.gsub(/[^\d]/, '').to_i
               if price >= 10_000 && price <= 10_000_000
@@ -66,13 +64,23 @@ module Resolver
       bedroom_node = doc.css('*').find { |node| node.text.match?(/Bedrooms\s*\d+/i) }
       if bedroom_node && (m = bedroom_node.text.match(/Bedrooms\s*(\d+)/i))
         bedrooms = m[1].to_i
-        unit_type ||= bedrooms == 0 ? "Studio" : "#{bedrooms}BR"
         facts[:bedrooms] = bedrooms
+        
+        # Check if there's a maid's room mentioned anywhere on the page
+        full_text = doc.text.downcase
+        has_maids_room = full_text.include?("+maid") || 
+                         full_text.include?("+ maid") || 
+                         full_text.include?("maid's room") || 
+                         full_text.include?("maids room") ||
+                         full_text.match?(/\bmaid\b.*\broom\b/)
+        
+        # Set unit type (add 1 bedroom if maid's room detected)
+        effective_bedrooms = has_maids_room ? bedrooms + 1 : bedrooms
+        unit_type ||= effective_bedrooms == 0 ? "Studio" : "#{effective_bedrooms}BR"
       end
 
       # Find bathrooms - improved multi-strategy approach
       if bathrooms.nil?
-        # Strategy 1: Look in property details/features sections specifically
         doc.css('[class*="property"], [class*="feature"], [class*="detail"], main, [role="main"]').each do |section|
           section_text = section.text
           matches = section_text.scan(/Bathrooms?\s*:?\s*(\d+)/i)
@@ -84,7 +92,6 @@ module Resolver
         end
       end
 
-      # Strategy 2: If still not found, look for the specific pattern in full page
       if bathrooms.nil?
         full_text = doc.text
         bathroom_mentions = full_text.scan(/Bathrooms?\s*:?\s*(\d+)/i).flatten.map(&:to_i)
@@ -108,7 +115,6 @@ module Resolver
       if yearly_rent.nil?
         full_text = doc.text
         
-        # Strategy 1: Look for explicit "Yearly" or "per year" mentions
         rent_patterns = [
           /AED\s*([\d,]+)\s*(?:\/\s*)?(?:per\s+)?year/i,
           /AED\s*([\d,]+)\s*yearly/i,
@@ -121,7 +127,6 @@ module Resolver
         rent_patterns.each do |pattern|
           if (m = full_text.match(pattern))
             rent_value = m[1].gsub(',', '').to_i
-            # Sanity check: yearly rent should be between 10k and 10M AED
             if rent_value >= 10_000 && rent_value <= 10_000_000
               yearly_rent = rent_value
               facts[:yearly_rent] = yearly_rent
@@ -131,7 +136,6 @@ module Resolver
         end
       end
 
-      # Strategy 2: Look in meta tags for price
       if yearly_rent.nil?
         price_meta = doc.at('meta[property="product:price:amount"]')&.[]("content") ||
                      doc.at('meta[property="og:price:amount"]')&.[]("content")
@@ -144,9 +148,7 @@ module Resolver
         end
       end
 
-      # Strategy 3: Find any large AED amount that looks like rent
       if yearly_rent.nil?
-        # Look for price elements or divs
         doc.css('[class*="price"], [class*="amount"], [data-testid*="price"]').each do |node|
           text = node.text
           if (m = text.match(/AED\s*([\d,]+)/i)) || (m = text.match(/([\d,]+)\s*AED/i))
@@ -172,7 +174,7 @@ module Resolver
       end
 
       # Normalize & alias
-      building = Resolver::Normalize.normalize_building(building)
+      building = Resolver::Normalize.normalize_building(building, url)
       building = Resolver::Aliases.canonical_for(building) if building
 
       # If we got bedrooms from the page, make sure unit_type matches
@@ -180,7 +182,6 @@ module Resolver
         unit_type = bedrooms == 0 ? "Studio" : "#{bedrooms}BR"
       end
 
-      # Add bedrooms to facts if we determined unit_type but didn't find it explicitly
       if unit_type && !facts[:bedrooms]
         if unit_type == "Studio"
           facts[:bedrooms] = 0

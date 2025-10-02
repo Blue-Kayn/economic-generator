@@ -180,6 +180,7 @@
         padding: 1rem;
         border-radius: 8px;
         margin-bottom: 1rem;
+        font-weight: 600;
       }
       .badge {
         display: inline-block;
@@ -220,7 +221,6 @@
         document.getElementById('investmentBtn').classList.toggle('active', mode === 'investment');
         document.getElementById('subleaseBtn').classList.toggle('active', mode === 'sublease');
         
-        // Re-render if we already have data
         if (lastData) {
           renderResults(lastData);
         }
@@ -250,8 +250,9 @@
         const resultBox = document.getElementById("result");
         resultBox.innerHTML = "";
 
-        // PROPERTY DETAILS
-        if (data.resolver) {
+        const hasEconomicsData = data.economics && data.economics.status === "ok" && data.economics.data;
+
+        if (hasEconomicsData && data.resolver) {
           const r = data.resolver;
           resultBox.innerHTML += `
             <div class="section">
@@ -274,15 +275,21 @@
               </div>
             </div>
           `;
+
+          if (data.selection && data.selection.fallback_message) {
+            resultBox.innerHTML += `
+              <div class="warning-message">
+                ⚠️ ${data.selection.fallback_message}
+              </div>
+            `;
+          }
         }
 
-        // ECONOMICS (ALWAYS SHOW)
         if (data.economics) {
-          if (data.economics.status === "ok" && data.economics.data) {
+          if (hasEconomicsData) {
             const econ = data.economics.data;
             const resolver = data.resolver;
 
-            // RENTAL ECONOMICS SECTION (shown in both modes)
             resultBox.innerHTML += `
               <div class="section">
                 <h3>Rental Economics (Median Projection)</h3>
@@ -304,25 +311,20 @@
               </div>
             `;
 
-            // SUBLEASE PROFITABILITY (only in sublease mode)
             if (currentMode === 'sublease') {
               const grossRevenue = econ.rev_p50;
               const platformFee = Math.round(grossRevenue * 0.15);
               const afterPlatformFee = grossRevenue - platformFee;
               
-              // Calculate utilities
               const sizeSqft = resolver.facts?.size_sqft || 0;
               const utilities = sizeSqft > 0 ? Math.round(17.5 * sizeSqft) : null;
               
-              // Calculate tourism dirham (12.5 AED per night occupied)
               const occupancyRate = econ.occ_p50 / 100;
               const nightsOccupied = Math.round(365 * occupancyRate);
               const tourismDirham = Math.round(12.5 * nightsOccupied);
               
-              // Get yearly rent
               const yearlyRent = resolver.facts?.yearly_rent || null;
               
-              // Calculate net profit
               let netProfit = afterPlatformFee - (utilities || 0) - tourismDirham - (yearlyRent || 0);
               
               let breakdownHTML = `
@@ -372,7 +374,7 @@
               } else {
                 breakdownHTML += `
                   <div class="warning-message">
-                    ⚠️ Yearly rent not detected from listing - profitability calculation incomplete
+                    ⚠️ Yearly rent not detected from listing - profitability calculation unavailable
                   </div>
                 `;
               }
@@ -390,7 +392,6 @@
 
               resultBox.innerHTML += breakdownHTML;
 
-              // Add assumptions note
               resultBox.innerHTML += `
                 <div class="section">
                   <h3>Assumptions & Notes</h3>
@@ -408,14 +409,13 @@
             resultBox.innerHTML += `
               <div class="error-message">
                 <strong>No Economics Data Available</strong><br>
-                ${data.economics.user_message || "Insufficient sample data"}
+                ${data.economics.user_message || "Could not match building to our database"}
               </div>
             `;
           }
         }
 
-        // LISTINGS TABLE (always show regardless of mode)
-        if (data.economics && data.economics.listings && data.economics.listings.length > 0) {
+        if (hasEconomicsData && data.economics.listings && data.economics.listings.length > 0) {
           let html = `
             <div class="section">
               <h3>Comparable Listings Used</h3>

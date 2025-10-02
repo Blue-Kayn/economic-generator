@@ -1,4 +1,6 @@
 # frozen_string_literal: true
+# app/controllers/api/analyze_controller.rb
+
 module Api
   class AnalyzeController < ApplicationController
     protect_from_forgery with: :null_session
@@ -17,16 +19,66 @@ module Api
         Listings::Registry.send(:load_rows!)
         lrows = Listings::Registry.instance_variable_get(:@rows) || []
         
-        # Use fuzzy matching to find best building from CSV
         matched_building = find_best_building_match(lrows, resolved[:building_name])
         
         if matched_building
           chosen = choose_unit_for_building(lrows, matched_building, normalized_unit)
 
+          # If requested unit not available, try fallback immediately
+          if chosen[:unit_type].nil?
+            fallback_unit = try_fallback_unit(normalized_unit, chosen[:available_units])
+            
+            if fallback_unit
+              chosen[:unit_type] = fallback_unit
+              chosen[:reason] = "using_fallback_one_bedroom_smaller"
+              chosen[:fallback_message] = "No data available for #{normalized_unit}. Showing #{fallback_unit} data as closest alternative."
+            else
+              render json: {
+                resolver: {
+                  building_name: resolved[:building_name],
+                  building_name_matched: matched_building,
+                  unit_type: resolved[:unit_type],
+                  unit_type_normalized: normalized_unit,
+                  confidence: resolved[:confidence],
+                  facts: resolved[:facts]
+                },
+                selection: chosen,
+                economics: { 
+                  status: "no_data", 
+                  reason_code: "UNIT_TYPE_NOT_AVAILABLE", 
+                  data: nil, 
+                  user_message: "No data available for #{normalized_unit} in #{matched_building}. Available unit types: #{chosen[:available_units].join(', ')}" 
+                },
+                listings: { status: "no_data", building_name: matched_building, unit_type: normalized_unit, count: 0, items: [] }
+              }
+              return
+            end
+          end
+
+          # Get economics data
           econ = Economics::Registry.lookup(
             building_name: matched_building,
             unit_type: chosen[:unit_type]
           )
+
+          # If insufficient sample, try one bedroom smaller
+          if econ[:status] == "no_data" && econ[:reason_code] == "INSUFFICIENT_SAMPLE"
+            fallback_unit = try_fallback_unit(chosen[:unit_type], chosen[:available_units])
+            
+            if fallback_unit
+              fallback_econ = Economics::Registry.lookup(
+                building_name: matched_building,
+                unit_type: fallback_unit
+              )
+              
+              if fallback_econ[:status] == "ok"
+                econ = fallback_econ
+                original_unit = chosen[:unit_type]
+                chosen[:unit_type] = fallback_unit
+                chosen[:fallback_message] = "Insufficient data for #{original_unit}. Showing #{fallback_unit} data as closest alternative."
+              end
+            end
+          end
 
           if econ[:status] == "no_data"
             econ[:user_message] = case econ[:reason_code]
@@ -66,6 +118,7 @@ module Api
               unit_type_requested: normalized_unit,
               unit_type_chosen: chosen[:unit_type],
               reason: chosen[:reason],
+              fallback_message: chosen[:fallback_message],
               available_units: chosen[:available_units]
             },
             economics: econ,
@@ -107,7 +160,6 @@ module Api
 
     private
 
-    # Fuzzy match to find best building from CSV
     def find_best_building_match(rows, query_building)
       return nil if rows.empty?
       
@@ -121,7 +173,7 @@ module Api
         csv_tokens = tokenize(csv_building)
         score = jaccard_similarity(query_tokens, csv_tokens)
         
-        if score > best_score && score >= 0.4  # 40% threshold for controller
+        if score > best_score && score >= 0.4
           best_score = score
           best_match = csv_building
         end
@@ -167,20 +219,32 @@ module Api
       if requested_unit && available_units.map { |u| canonical(u) }.include?(canonical(requested_unit))
         return { 
           unit_type: requested_unit, 
-          reason: "page_detected_and_available", 
+          reason: "exact_match", 
           available_units: available_units.sort 
         }
       end
 
-      freq = Hash.new(0)
-      building_rows.each { |r| freq[r.unit_type] += 1 }
-      best_unit = freq.max_by { |unit, count| [count, unit] }&.first || available_units.first || "1BR"
-
-      { 
-        unit_type: best_unit, 
-        reason: requested_unit ? "requested_not_available;defaulted_to_most_common" : "no_unit_detected;defaulted_to_most_common", 
-        available_units: available_units.sort 
+      {
+        unit_type: nil,
+        reason: "requested_unit_not_available",
+        requested_unit: requested_unit,
+        available_units: available_units.sort
       }
+    end
+
+    def try_fallback_unit(requested_unit, available_units)
+      return nil unless requested_unit
+      
+      match = requested_unit.match(/(\d+)BR/)
+      return nil unless match
+      
+      requested_beds = match[1].to_i
+      return nil if requested_beds <= 0
+      
+      fallback_unit = "#{requested_beds - 1}BR"
+      fallback_unit = "Studio" if requested_beds == 1
+      
+      available_units.find { |u| canonical(u) == canonical(fallback_unit) }
     end
 
     def canonical(s)
