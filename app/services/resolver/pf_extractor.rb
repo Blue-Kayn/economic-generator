@@ -17,6 +17,10 @@ module Resolver
       size = nil
       yearly_rent = nil
       facts = {}
+      
+      # NEW: Track maid's room detection
+      has_maids_room = false
+      original_bedrooms = nil
 
       # 1) Try LD-JSON first
       doc.css('script[type="application/ld+json"]').each do |node|
@@ -64,9 +68,10 @@ module Resolver
       bedroom_node = doc.css('*').find { |node| node.text.match?(/Bedrooms\s*\d+/i) }
       if bedroom_node && (m = bedroom_node.text.match(/Bedrooms\s*(\d+)/i))
         bedrooms = m[1].to_i
+        original_bedrooms = bedrooms  # Store original count
         facts[:bedrooms] = bedrooms
         
-        # Check if there's a maid's room mentioned anywhere on the page
+        # NEW: Check if there's a maid's room mentioned anywhere on the page
         full_text = doc.text.downcase
         has_maids_room = full_text.include?("+maid") || 
                          full_text.include?("+ maid") || 
@@ -74,9 +79,23 @@ module Resolver
                          full_text.include?("maids room") ||
                          full_text.match?(/\bmaid\b.*\broom\b/)
         
-        # Set unit type (add 1 bedroom if maid's room detected)
-        effective_bedrooms = has_maids_room ? bedrooms + 1 : bedrooms
-        unit_type ||= effective_bedrooms == 0 ? "Studio" : "#{effective_bedrooms}BR"
+        # Store maid's room detection in facts
+        if has_maids_room
+          facts[:has_maids_room] = true
+          facts[:bedrooms_without_maid] = original_bedrooms
+          
+          # Set unit type as N+1 bedrooms
+          effective_bedrooms = bedrooms + 1
+          unit_type ||= effective_bedrooms == 0 ? "Studio" : "#{effective_bedrooms}BR"
+          
+          # Update bedrooms count to reflect maid's room
+          bedrooms = effective_bedrooms
+          facts[:bedrooms] = effective_bedrooms
+        else
+          # No maid's room
+          facts[:has_maids_room] = false
+          unit_type ||= bedrooms == 0 ? "Studio" : "#{bedrooms}BR"
+        end
       end
 
       # Find bathrooms - improved multi-strategy approach

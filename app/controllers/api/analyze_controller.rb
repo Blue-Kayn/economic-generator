@@ -4,6 +4,9 @@
 module Api
   class AnalyzeController < ApplicationController
     protect_from_forgery with: :null_session
+    
+    # Minimum sample size changed from 3 to 2
+    MIN_LISTINGS_REQUIRED = 2
 
     def link
       url = params[:url].to_s.strip
@@ -16,6 +19,10 @@ module Api
       if resolved[:building_name].present?
         normalized_unit = normalize_unit_type(resolved[:unit_type])
         
+        # CRITICAL: Check if property has maid's room
+        has_maids_room = resolved[:facts][:has_maids_room] || false
+        original_bedrooms = resolved[:facts][:bedrooms_without_maid]
+        
         Listings::Registry.send(:load_rows!)
         lrows = Listings::Registry.instance_variable_get(:@rows) || []
         
@@ -24,15 +31,41 @@ module Api
         if matched_building
           chosen = choose_unit_for_building(lrows, matched_building, normalized_unit)
 
-          # If requested unit not available, try fallback immediately
+          # FIXED: Only try fallback if property has maid's room
           if chosen[:unit_type].nil?
-            fallback_unit = try_fallback_unit(normalized_unit, chosen[:available_units])
-            
-            if fallback_unit
-              chosen[:unit_type] = fallback_unit
-              chosen[:reason] = "using_fallback_one_bedroom_smaller"
-              chosen[:fallback_message] = "No data available for #{normalized_unit}. Showing #{fallback_unit} data as closest alternative."
+            if has_maids_room && original_bedrooms
+              # Property has maid's room, try N-1 fallback
+              fallback_unit = "#{original_bedrooms}BR"
+              fallback_unit = "Studio" if original_bedrooms == 0
+              
+              if chosen[:available_units].find { |u| canonical(u) == canonical(fallback_unit) }
+                chosen[:unit_type] = fallback_unit
+                chosen[:reason] = "using_fallback_maids_room"
+                chosen[:fallback_message] = "⚠️ Maid's Room Detected: This property is listed as #{original_bedrooms}BR + Maid's Room (#{normalized_unit} equivalent). We only have data for standard #{fallback_unit} units. The economics shown are for #{fallback_unit} properties WITHOUT a maid's room. Your property may perform differently."
+              else
+                # No fallback data available either
+                render json: {
+                  resolver: {
+                    building_name: resolved[:building_name],
+                    building_name_matched: matched_building,
+                    unit_type: resolved[:unit_type],
+                    unit_type_normalized: normalized_unit,
+                    confidence: resolved[:confidence],
+                    facts: resolved[:facts]
+                  },
+                  selection: chosen,
+                  economics: { 
+                    status: "no_data", 
+                    reason_code: "UNIT_TYPE_NOT_AVAILABLE", 
+                    data: nil, 
+                    user_message: "No data available for #{normalized_unit} or #{fallback_unit} in #{matched_building}. This property has a maid's room. Available unit types: #{chosen[:available_units].join(', ')}" 
+                  },
+                  listings: { status: "no_data", building_name: matched_building, unit_type: normalized_unit, count: 0, items: [] }
+                }
+                return
+              end
             else
+              # NO maid's room - don't fallback, just show error
               render json: {
                 resolver: {
                   building_name: resolved[:building_name],
@@ -61,21 +94,32 @@ module Api
             unit_type: chosen[:unit_type]
           )
 
-          # If insufficient sample, try one bedroom smaller
+          # IMPORTANT: If maid's room detected and we're showing data, add warning
+          if has_maids_room && econ[:status] == "ok"
+            if chosen[:unit_type] == normalized_unit
+              # We have exact data (e.g., 3BR data for 2BR+Maid)
+              chosen[:fallback_message] ||= "⚠️ Maid's Room Detected: This property is listed as #{original_bedrooms}BR + Maid's Room. Our data shows #{normalized_unit} economics, but these are for standard #{normalized_unit} units which may or may not include maid's rooms. Properties with maid's rooms may perform differently in the market."
+            end
+          end
+
+          # FIXED: Only try fallback on insufficient sample if property has maid's room
           if econ[:status] == "no_data" && econ[:reason_code] == "INSUFFICIENT_SAMPLE"
-            fallback_unit = try_fallback_unit(chosen[:unit_type], chosen[:available_units])
-            
-            if fallback_unit
-              fallback_econ = Economics::Registry.lookup(
-                building_name: matched_building,
-                unit_type: fallback_unit
-              )
+            if has_maids_room && original_bedrooms
+              fallback_unit = "#{original_bedrooms}BR"
+              fallback_unit = "Studio" if original_bedrooms == 0
               
-              if fallback_econ[:status] == "ok"
-                econ = fallback_econ
-                original_unit = chosen[:unit_type]
-                chosen[:unit_type] = fallback_unit
-                chosen[:fallback_message] = "Insufficient data for #{original_unit}. Showing #{fallback_unit} data as closest alternative."
+              if chosen[:available_units].find { |u| canonical(u) == canonical(fallback_unit) }
+                fallback_econ = Economics::Registry.lookup(
+                  building_name: matched_building,
+                  unit_type: fallback_unit
+                )
+                
+                if fallback_econ[:status] == "ok"
+                  econ = fallback_econ
+                  original_unit = chosen[:unit_type]
+                  chosen[:unit_type] = fallback_unit
+                  chosen[:fallback_message] = "⚠️ Maid's Room Detected: This property is listed as #{original_bedrooms}BR + Maid's Room (#{original_unit} equivalent). Insufficient data for #{original_unit} units. Showing #{fallback_unit} economics instead. Note: Our data covers standard #{fallback_unit} properties WITHOUT a maid's room. Your property may perform differently."
+                end
               end
             end
           end
@@ -119,15 +163,16 @@ module Api
               unit_type_chosen: chosen[:unit_type],
               reason: chosen[:reason],
               fallback_message: chosen[:fallback_message],
-              available_units: chosen[:available_units]
+              available_units: chosen[:available_units],
+              has_maids_room: has_maids_room
             },
             economics: econ,
             economics_sources: sources,
             listings: lis
           }
         else
+          # DON'T send resolver data when building not matched
           render json: {
-            resolver: resolved,
             economics: { 
               status: "no_data", 
               reason_code: "BUILDING_NOT_FOUND", 
@@ -138,8 +183,8 @@ module Api
           }
         end
       else
+        # DON'T send resolver data when building name not found
         render json: {
-          resolver: resolved,
           economics: { 
             status: "no_data", 
             reason_code: "NOT_SUPPORTED", 
@@ -230,21 +275,6 @@ module Api
         requested_unit: requested_unit,
         available_units: available_units.sort
       }
-    end
-
-    def try_fallback_unit(requested_unit, available_units)
-      return nil unless requested_unit
-      
-      match = requested_unit.match(/(\d+)BR/)
-      return nil unless match
-      
-      requested_beds = match[1].to_i
-      return nil if requested_beds <= 0
-      
-      fallback_unit = "#{requested_beds - 1}BR"
-      fallback_unit = "Studio" if requested_beds == 1
-      
-      available_units.find { |u| canonical(u) == canonical(fallback_unit) }
     end
 
     def canonical(s)

@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 # app/services/economics/registry.rb
 #
-# Uses fuzzy string matching instead of hardcoded synonyms
-# Works for ANY building name variations
+# UPDATED: Minimum sample size changed from 3 to 2 listings
 #
 require_relative "seasonality"
 
 module Economics
   class Registry
     MIN_DAYS_FOR_SAMPLE = 270
-    FUZZY_MATCH_THRESHOLD = 0.6  # 60% similarity required
+    MIN_LISTINGS_REQUIRED = 2  # Changed from 3 to 2
+    FUZZY_MATCH_THRESHOLD = 0.6  # 60% similarity for building matching
     
     class << self
       def reload!
@@ -38,7 +38,8 @@ module Economics
           r[:days_available].to_i >= MIN_DAYS_FOR_SAMPLE
         end
         
-        return no_data_response(building, unit, "INSUFFICIENT_SAMPLE") if candidates.size < 3
+        # Changed from 3 to 2 minimum listings
+        return no_data_response(building, unit, "INSUFFICIENT_SAMPLE") if candidates.size < MIN_LISTINGS_REQUIRED
         
         expanded = candidates.map { |r| expand_listing(r, unit) }
         metrics = calculate_metrics(expanded, building, unit)
@@ -210,7 +211,8 @@ module Economics
           truth_count: expanded.count { |x| x[:mode] == "truth" },
           scaled_count: expanded.count { |x| x[:mode] == "seasonality_scaled" },
           min_days_filter: MIN_DAYS_FOR_SAMPLE,
-          method_version: "6.2-fuzzy-matching",
+          min_listings_required: MIN_LISTINGS_REQUIRED,
+          method_version: "6.3-min-2-listings",
           data_snapshot_date: "2025-09-22"
         }
       end
@@ -258,7 +260,7 @@ module Economics
 
       def reason_messages
         {
-          "INSUFFICIENT_SAMPLE" => "Not enough data for this building/unit combination (need at least 3 comps with 270+ days)",
+          "INSUFFICIENT_SAMPLE" => "Not enough data for this building/unit combination (need at least #{MIN_LISTINGS_REQUIRED} comps with #{MIN_DAYS_FOR_SAMPLE}+ days)",
           "BUILDING_NOT_FOUND" => "Building not found in dataset",
           "UNIT_TYPE_INVALID" => "Unit type not recognized"
         }

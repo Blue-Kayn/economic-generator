@@ -252,7 +252,8 @@
 
         const hasEconomicsData = data.economics && data.economics.status === "ok" && data.economics.data;
 
-        if (hasEconomicsData && data.resolver) {
+        // CRITICAL: Only show property details if we have economics data AND a building match
+        if (hasEconomicsData && data.resolver && data.resolver.building_name) {
           const r = data.resolver;
           resultBox.innerHTML += `
             <div class="section">
@@ -276,15 +277,17 @@
             </div>
           `;
 
+          // Show fallback warning if present
           if (data.selection && data.selection.fallback_message) {
             resultBox.innerHTML += `
-              <div class="warning-message">
-                ⚠️ ${data.selection.fallback_message}
+              <div class="warning-message" style="background: #92400e; border-left: 4px solid #f59e0b; padding: 1.25rem;">
+                ${data.selection.fallback_message}
               </div>
             `;
           }
         }
 
+        // Economics data section
         if (data.economics) {
           if (hasEconomicsData) {
             const econ = data.economics.data;
@@ -325,7 +328,8 @@
               
               const yearlyRent = resolver.facts?.yearly_rent || null;
               
-              let netProfit = afterPlatformFee - (utilities || 0) - tourismDirham - (yearlyRent || 0);
+              // FIXED: Calculate net profit correctly (revenue - all expenses)
+              let netProfit = grossRevenue - platformFee - (utilities || 0) - tourismDirham - (yearlyRent || 0);
               
               let breakdownHTML = `
                 <div class="section">
@@ -381,11 +385,15 @@
 
               const profitClass = netProfit >= 0 ? 'profit' : 'loss';
               const profitLabel = netProfit >= 0 ? 'Net Annual Profit' : 'Net Annual Loss';
+              
+              console.log('Net Profit Calculation:', netProfit); // Debug log
 
               breakdownHTML += `
                 <div class="breakdown-row total">
                   <div class="breakdown-label">${profitLabel}</div>
-                  <div class="breakdown-value ${profitClass}" style="font-size: 1.4rem; font-weight: 700;">AED ${Math.abs(netProfit).toLocaleString()}</div>
+                  <div class="breakdown-value" style="font-size: 1.4rem; font-weight: 700; color: ${netProfit >= 0 ? '#34d399' : '#f87171'} !important;">
+                    AED ${netProfit.toLocaleString()}
+                  </div>
                 </div>
               </div>
               `;
@@ -406,6 +414,7 @@
               `;
             }
           } else {
+            // NO ECONOMICS DATA - Show ONLY error message
             resultBox.innerHTML += `
               <div class="error-message">
                 <strong>No Economics Data Available</strong><br>
@@ -415,6 +424,7 @@
           }
         }
 
+        // Comparable listings section - only show if we have economics data
         if (hasEconomicsData && data.economics.listings && data.economics.listings.length > 0) {
           let html = `
             <div class="section">
