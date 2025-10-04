@@ -1,0 +1,50 @@
+<!-- app/views/analyze/controls/_buy_to_lease.html.erb -->
+<div class="fee-control">
+  <label>
+    <input type="checkbox" data-property-analyzer-target="btlAgencyFeeEnabled" data-action="change->property-analyzer#updateCalculations">
+    Agency Fee:
+  </label>
+  <input 
+    type="number" 
+    data-property-analyzer-target="btlAgencyFeePercent"
+    data-action="change->property-analyzer#updateCalculations"
+    min="0" max="10" step="0.5" value="2" disabled
+  >
+  <span style="color: #9ca3af;">% of purchase price</span>
+</div>
+
+<div class="fee-control">
+  <label>
+    <input type="checkbox" data-property-analyzer-target="btlServiceChargeEnabled" data-action="change->property-analyzer#updateCalculations">
+    Service Charge:
+  </label>
+  <input 
+    type="number" 
+    data-property-analyzer-target="btlServiceChargeRate"
+    data-action="change->property-analyzer#updateCalculations"
+    min="0" step="1" value="15" placeholder="AED/sqft" disabled style="width: 100px;"
+  >
+  <span style="color: #9ca3af;">AED/sqft annually</span>
+</div>
+
+<div class="fee-control">
+  <label>
+    <input type="checkbox" data-property-analyzer-target="btlManagementFeeEnabled" data-action="change->property-analyzer#updateCalculations">
+    Management Fee:
+  </label>
+  <input 
+    type="number" 
+    data-property-analyzer-target="btlManagementFeePercent"
+    data-action="change->property-analyzer#updateCalculations"
+    min="0" max="100" step="0.5" value="10" disabled
+  >
+  <span style="color: #9ca3af;">%</span>
+</div>
+
+<div class="fee-control">
+  <label>
+    <input type="checkbox" data-property-analyzer-target="btlChillerFreeEnabled" data-action="change->property-analyzer#updateCalculations">
+    Chiller Free
+  </label>
+  <span style="color: #9ca3af; margin-left: 0.5rem;">(reduces utilities to 9 AED/sqft vs 18 AED/sqft)</span>
+</div>

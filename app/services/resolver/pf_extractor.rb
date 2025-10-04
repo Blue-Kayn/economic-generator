@@ -1,9 +1,5 @@
-# frozen_string_literal: true
 # app/services/resolver/pf_extractor.rb
-require "json"
-require_relative "normalize"
-require_relative "aliases"
-require_relative "page_fetcher"
+# frozen_string_literal: true
 
 module Resolver
   class PfExtractor
@@ -24,6 +20,13 @@ module Resolver
       has_maids_room = false
       original_bedrooms = nil
 
+      # CRITICAL: Detect listing type from URL first
+      if url.match?(/\/(rent|for-rent)\//i)
+        listing_type = 'rent'
+      elsif url.match?(/\/(buy|for-sale|sale)\//i)
+        listing_type = 'sale'
+      end
+
       # 1) Try LD-JSON first
       doc.css('script[type="application/ld+json"]').each do |node|
         begin
@@ -42,11 +45,17 @@ module Resolver
               facts[:bathrooms] = bathrooms
             end
             
+            # Detect price from LD-JSON
             if p["offers"] && p["offers"]["price"]
               price = p["offers"]["price"].to_s.gsub(/[^\d]/, '').to_i
-              if price >= 10_000 && price <= 10_000_000
-                yearly_rent = price
-                facts[:yearly_rent] = yearly_rent
+              if price >= 10_000 && price <= 100_000_000
+                if listing_type == 'sale'
+                  purchase_price = price
+                  facts[:purchase_price] = purchase_price
+                elsif listing_type == 'rent'
+                  yearly_rent = price
+                  facts[:yearly_rent] = yearly_rent
+                end
               end
             end
           end
@@ -62,6 +71,15 @@ module Resolver
         candidate  = meta_title || page_title
         building ||= candidate
         unit_type ||= Resolver::Normalize.unit_type_from_text(candidate)
+        
+        # Detect listing type from title if not from URL
+        if listing_type.nil? && candidate
+          if candidate.match?(/for rent|rent/i)
+            listing_type = 'rent'
+          elsif candidate.match?(/for sale|sale/i)
+            listing_type = 'sale'
+          end
+        end
       end
 
       # 3) Extract bedrooms, bathrooms, size from PropertyFinder's property details section
@@ -70,11 +88,10 @@ module Resolver
       bedroom_node = doc.css('*').find { |node| node.text.match?(/Bedrooms\s*\d+/i) }
       if bedroom_node && (m = bedroom_node.text.match(/Bedrooms\s*(\d+)/i))
         bedrooms = m[1].to_i
-        original_bedrooms = bedrooms  # Store original count
+        original_bedrooms = bedrooms
         facts[:bedrooms] = bedrooms
         
         # IMPROVED: Check for maid's room ONLY in property details/description sections
-        # Look in specific PropertyFinder sections, not entire page
         property_sections = doc.css(
           '[class*="property-description"], ' \
           '[class*="property-detail"], ' \
@@ -87,7 +104,6 @@ module Resolver
         section_text = property_sections.map(&:text).join(" ").downcase
         
         # Exclude "maid service" (amenity) - only detect "maid's room" or "maid room" (bedroom feature)
-        # Remove "maid service" and "maid services" from detection text
         cleaned_text = section_text.gsub(/\bmaid'?s?\s+service'?s?\b/, '')
         
         # Only detect if explicitly mentioned with bedroom count OR as a room feature
@@ -97,26 +113,20 @@ module Resolver
                          cleaned_text.match?(/\+\s*maid\s+(room|bed)/i) ||
                          cleaned_text.match?(/with\s+maid'?s?\s+room/i)
         
-        # Store maid's room detection in facts
         if has_maids_room
           facts[:has_maids_room] = true
           facts[:bedrooms_without_maid] = original_bedrooms
-          
-          # Set unit type as N+1 bedrooms
           effective_bedrooms = bedrooms + 1
           unit_type ||= effective_bedrooms == 0 ? "Studio" : "#{effective_bedrooms}BR"
-          
-          # Update bedrooms count to reflect maid's room
           bedrooms = effective_bedrooms
           facts[:bedrooms] = effective_bedrooms
         else
-          # No maid's room
           facts[:has_maids_room] = false
           unit_type ||= bedrooms == 0 ? "Studio" : "#{bedrooms}BR"
         end
       end
 
-      # Find bathrooms - improved multi-strategy approach
+      # Find bathrooms
       if bathrooms.nil?
         doc.css('[class*="property"], [class*="feature"], [class*="detail"], main, [role="main"]').each do |section|
           section_text = section.text
@@ -138,7 +148,7 @@ module Resolver
         end
       end
 
-      # Find property size (sqft or sqm)
+      # Find property size
       size_node = doc.css('*').find { |node| node.text.match?(/Property\s*Size\s*[\d,]+\s*(sqft|sqm)/i) }
       if size_node && (m = size_node.text.match(/Property\s*Size\s*([\d,]+)\s*(sqft|sqm)/i))
         size_value = m[1].gsub(',', '').to_i
@@ -148,8 +158,8 @@ module Resolver
         facts[:size_sqft] = size_unit == "sqft" ? size_value : (size_value * 10.764).round(0)
       end
 
-      # Find yearly rent - IMPROVED with multiple strategies
-      if yearly_rent.nil?
+      # Find price - IMPROVED to distinguish rent vs sale
+      if listing_type == 'rent' && yearly_rent.nil?
         full_text = doc.text
         
         rent_patterns = [
@@ -171,9 +181,31 @@ module Resolver
             end
           end
         end
+      elsif listing_type == 'sale' && purchase_price.nil?
+        full_text = doc.text
+        
+        # Sale price patterns
+        price_patterns = [
+          /Price.*?AED\s*([\d,]+)/i,
+          /AED\s*([\d,]+)/i,
+          /([\d,]+)\s*AED/i
+        ]
+        
+        price_patterns.each do |pattern|
+          if (m = full_text.match(pattern))
+            price_value = m[1].gsub(',', '').to_i
+            # Sale prices are typically much higher than rent
+            if price_value >= 100_000 && price_value <= 100_000_000
+              purchase_price = price_value
+              facts[:purchase_price] = purchase_price
+              break
+            end
+          end
+        end
       end
 
-      if yearly_rent.nil?
+      # Try meta tags for price if still not found
+      if listing_type == 'rent' && yearly_rent.nil?
         price_meta = doc.at('meta[property="product:price:amount"]')&.[]("content") ||
                      doc.at('meta[property="og:price:amount"]')&.[]("content")
         if price_meta
@@ -183,16 +215,32 @@ module Resolver
             facts[:yearly_rent] = yearly_rent
           end
         end
+      elsif listing_type == 'sale' && purchase_price.nil?
+        price_meta = doc.at('meta[property="product:price:amount"]')&.[]("content") ||
+                     doc.at('meta[property="og:price:amount"]')&.[]("content")
+        if price_meta
+          price_value = price_meta.gsub(/[^\d]/, '').to_i
+          if price_value >= 100_000 && price_value <= 100_000_000
+            purchase_price = price_value
+            facts[:purchase_price] = price_value
+          end
+        end
       end
 
-      if yearly_rent.nil?
+      # Try price nodes
+      if (listing_type == 'rent' && yearly_rent.nil?) || (listing_type == 'sale' && purchase_price.nil?)
         doc.css('[class*="price"], [class*="amount"], [data-testid*="price"]').each do |node|
           text = node.text
           if (m = text.match(/AED\s*([\d,]+)/i)) || (m = text.match(/([\d,]+)\s*AED/i))
-            rent_value = m[1].gsub(',', '').to_i
-            if rent_value >= 10_000 && rent_value <= 10_000_000
-              yearly_rent = rent_value
+            price_value = m[1].gsub(',', '').to_i
+            
+            if listing_type == 'rent' && price_value >= 10_000 && price_value <= 10_000_000
+              yearly_rent = price_value
               facts[:yearly_rent] = yearly_rent
+              break
+            elsif listing_type == 'sale' && price_value >= 100_000 && price_value <= 100_000_000
+              purchase_price = price_value
+              facts[:purchase_price] = purchase_price
               break
             end
           end
@@ -226,6 +274,9 @@ module Resolver
           facts[:bedrooms] = unit_type.match(/(\d+)BR/)[1].to_i
         end
       end
+
+      # Add listing_type to facts
+      facts[:listing_type] = listing_type if listing_type
 
       conf = 0.5
       conf += 0.2 if building
