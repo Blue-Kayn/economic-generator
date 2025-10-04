@@ -1,15 +1,16 @@
 # frozen_string_literal: true
 # app/services/economics/registry.rb
 #
-# UPDATED: Minimum sample size changed from 3 to 2 listings
+# FIXED: Revenue now calculated from ADR × Occupancy × 365 for mathematical consistency
+# Minimum sample size: 2 listings with 270+ days
 #
 require_relative "seasonality"
 
 module Economics
   class Registry
     MIN_DAYS_FOR_SAMPLE = 270
-    MIN_LISTINGS_REQUIRED = 2  # Changed from 3 to 2
-    FUZZY_MATCH_THRESHOLD = 0.6  # 60% similarity for building matching
+    MIN_LISTINGS_REQUIRED = 2
+    FUZZY_MATCH_THRESHOLD = 0.6
     
     class << self
       def reload!
@@ -38,7 +39,6 @@ module Economics
           r[:days_available].to_i >= MIN_DAYS_FOR_SAMPLE
         end
         
-        # Changed from 3 to 2 minimum listings
         return no_data_response(building, unit, "INSUFFICIENT_SAMPLE") if candidates.size < MIN_LISTINGS_REQUIRED
         
         expanded = candidates.map { |r| expand_listing(r, unit) }
@@ -87,10 +87,8 @@ module Economics
       private
 
       # Normalize ONLY revenue values - convert millions to full numbers
-      # Only applies to revenue, not ADR, occupancy, or any other metric
       def normalize_revenue(revenue_value)
         rev = revenue_value.to_f
-        # If revenue is less than 100, it's in millions (e.g., 1.1 = 1.1M)
         if rev > 0 && rev < 100
           (rev * 1_000_000).round(0)
         else
@@ -98,8 +96,6 @@ module Economics
         end
       end
 
-      # Fuzzy match building name against all buildings in CSV
-      # Returns the best matching building name from CSV, or nil if no good match
       def find_best_building_match(query_building)
         return nil if @rows.empty?
         
@@ -122,15 +118,13 @@ module Economics
         best_match
       end
 
-      # Tokenize building name into words (normalized)
       def tokenize(building_name)
         canonical(building_name)
           .split(/\s+/)
-          .reject { |w| w.length < 2 }  # ignore 1-letter words
+          .reject { |w| w.length < 2 }
           .to_set
       end
 
-      # Calculate Jaccard similarity between two sets of tokens
       def jaccard_similarity(tokens_a, tokens_b)
         return 0.0 if tokens_a.empty? || tokens_b.empty?
         
@@ -145,7 +139,7 @@ module Economics
         raw_adr = row[:adr].to_f
         raw_occ = row[:occupancy].to_f
         raw_occ = raw_occ * 100 if raw_occ <= 1.0
-        raw_revenue = normalize_revenue(row[:revenue])  # ONLY normalize revenue
+        raw_revenue = normalize_revenue(row[:revenue])
         
         if days >= 365
           return {
@@ -160,17 +154,75 @@ module Economics
             rev_365: raw_revenue,
             mode: "truth",
             adjustment_factor: 1.0,
+            tier_ratio_adr: 1.0,
+            tier_ratio_occ: 1.0,
             missing_months: []
           }
         end
         
-        missing_months = Seasonality.missing_months(days)
-        missing_multiplier = Seasonality.missing_months_multiplier(unit_type, days)
+        # SMART TIER-AWARE PROJECTION USING AIRDNA INSIGHTS
+        missing_days_map = Seasonality.missing_days_per_month(days)
+        data_end_date = Date.new(2025, 9, 22)
+        data_start_date = data_end_date - days.days + 1.day
         
-        projected_revenue_365 = raw_revenue * (1.0 + missing_multiplier)
-        projected_adr = raw_adr
-        projected_occ = (projected_revenue_365 / (projected_adr * 365.0)) * 100
-        projected_occ = [[projected_occ, 0].max, 100].min
+        # Calculate property's tier relative to AirDNA market averages
+        # Only using months where we HAVE data
+        covered_months_adr = []
+        covered_months_occ = []
+        
+        (1..12).each do |month|
+          # Skip if this month is missing data
+          next if missing_days_map[month] && missing_days_map[month] >= 25
+          
+          market_adr = Seasonality.monthly_adr(unit_type, month)
+          market_occ = Seasonality.monthly_occ(unit_type, month)
+          
+          if market_adr > 0
+            covered_months_adr << (raw_adr / market_adr)
+          end
+          if market_occ > 0
+            covered_months_occ << (raw_occ / market_occ)
+          end
+        end
+        
+        # Calculate tier ratios (property's performance vs market)
+        tier_ratio_adr = covered_months_adr.any? ? (covered_months_adr.sum / covered_months_adr.size) : 1.0
+        tier_ratio_occ = covered_months_occ.any? ? (covered_months_occ.sum / covered_months_occ.size) : 1.0
+        
+        # Clamp tier ratios to reasonable bounds (0.5x to 2.0x market)
+        tier_ratio_adr = [[tier_ratio_adr, 0.5].max, 2.0].min
+        tier_ratio_occ = [[tier_ratio_occ, 0.5].max, 2.0].min
+        
+        # Project full year ADR and Occupancy using tier-adjusted AirDNA patterns
+        projected_annual_adr = 0.0
+        projected_annual_occ = 0.0
+        total_days = 0
+        
+        (1..12).each do |month|
+          days_in_month = Date.new(2025, month, -1).day
+          market_adr = Seasonality.monthly_adr(unit_type, month)
+          market_occ = Seasonality.monthly_occ(unit_type, month)
+          
+          # If we have data for this month, use actual values
+          # If missing, use tier-adjusted AirDNA projection
+          if missing_days_map[month] && missing_days_map[month] >= 25
+            # Missing month - use tier-adjusted market data
+            month_adr = market_adr * tier_ratio_adr
+            month_occ = market_occ * tier_ratio_occ
+          else
+            # Have data - use actual property performance
+            month_adr = raw_adr
+            month_occ = raw_occ
+          end
+          
+          projected_annual_adr += month_adr * days_in_month
+          projected_annual_occ += month_occ * days_in_month
+          total_days += days_in_month
+        end
+        
+        projected_adr = (projected_annual_adr / total_days).round(0)
+        projected_occ = (projected_annual_occ / total_days).round(1)
+        projected_revenue_365 = (projected_adr * projected_occ / 100.0 * 365).round(0)
         
         {
           airbnb_id: row[:airbnb_id],
@@ -181,11 +233,11 @@ module Economics
           raw_occ: raw_occ,
           adr_365: projected_adr,
           occ_365: projected_occ,
-          rev_365: projected_revenue_365.round(0),
-          mode: "seasonality_scaled",
-          adjustment_factor: (1.0 + missing_multiplier).round(2),
-          missing_months: missing_months,
-          missing_months_multiplier: missing_multiplier.round(3)
+          rev_365: projected_revenue_365,
+          mode: "tier_aware_projection",
+          tier_ratio_adr: tier_ratio_adr.round(3),
+          tier_ratio_occ: tier_ratio_occ.round(3),
+          missing_months: missing_days_map.keys.select { |m| missing_days_map[m] >= 25 }
         }
       end
 
@@ -194,17 +246,27 @@ module Economics
         
         adr_values = expanded.map { |x| x[:adr_365] }
         occ_values = expanded.map { |x| x[:occ_365] }
-        rev_values = expanded.map { |x| x[:rev_365] }
         
         weights = expanded.map { |x| x[:mode] == "truth" ? 365 : x[:days_available] }
         
+        # Calculate weighted percentiles for ADR and Occupancy
+        adr_p50 = weighted_percentile(adr_values, weights, 0.50).round(0)
+        adr_p75 = weighted_percentile(adr_values, weights, 0.75).round(0)
+        occ_p50 = weighted_percentile(occ_values, weights, 0.50).round(1)
+        occ_p75 = weighted_percentile(occ_values, weights, 0.75).round(1)
+        
+        # FIXED: Calculate revenue from ADR × Occupancy × 365
+        # This ensures mathematical consistency
+        rev_p50 = (adr_p50 * occ_p50 / 100.0 * 365).round(0)
+        rev_p75 = (adr_p75 * occ_p75 / 100.0 * 365).round(0)
+        
         {
-          adr_p50: weighted_percentile(adr_values, weights, 0.50).round(0),
-          adr_p75: weighted_percentile(adr_values, weights, 0.75).round(0),
-          occ_p50: weighted_percentile(occ_values, weights, 0.50).round(1),
-          occ_p75: weighted_percentile(occ_values, weights, 0.75).round(1),
-          rev_p50: weighted_percentile(rev_values, weights, 0.50).round(0),
-          rev_p75: weighted_percentile(rev_values, weights, 0.75).round(0),
+          adr_p50: adr_p50,
+          adr_p75: adr_p75,
+          occ_p50: occ_p50,
+          occ_p75: occ_p75,
+          rev_p50: rev_p50,
+          rev_p75: rev_p75,
           building: building,
           unit_type: unit_type,
           sample_n: expanded.size,
@@ -212,7 +274,7 @@ module Economics
           scaled_count: expanded.count { |x| x[:mode] == "seasonality_scaled" },
           min_days_filter: MIN_DAYS_FOR_SAMPLE,
           min_listings_required: MIN_LISTINGS_REQUIRED,
-          method_version: "6.3-min-2-listings",
+          method_version: "6.4-calculated-revenue",
           data_snapshot_date: "2025-09-22"
         }
       end
@@ -313,10 +375,10 @@ module Economics
             airbnb_url: airbnb_url.to_s.strip,
             building: building.to_s.strip,
             unit_type: normalize_unit_from_bedrooms(bedrooms),
-            revenue: to_f(revenue),  # Keep raw value, normalize_revenue handles conversion
-            occupancy: to_f(occupancy),  # Never converted
-            days_available: to_i(days_available),  # Never converted
-            adr: to_f(adr)  # Never converted
+            revenue: to_f(revenue),
+            occupancy: to_f(occupancy),
+            days_available: to_i(days_available),
+            adr: to_f(adr)
           }
         end
         

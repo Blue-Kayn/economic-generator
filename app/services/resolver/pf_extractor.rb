@@ -16,9 +16,11 @@ module Resolver
       bathrooms = nil
       size = nil
       yearly_rent = nil
+      purchase_price = nil
+      listing_type = nil  # 'rent' or 'sale'
       facts = {}
       
-      # NEW: Track maid's room detection
+      # Track maid's room detection
       has_maids_room = false
       original_bedrooms = nil
 
@@ -71,13 +73,29 @@ module Resolver
         original_bedrooms = bedrooms  # Store original count
         facts[:bedrooms] = bedrooms
         
-        # NEW: Check if there's a maid's room mentioned anywhere on the page
-        full_text = doc.text.downcase
-        has_maids_room = full_text.include?("+maid") || 
-                         full_text.include?("+ maid") || 
-                         full_text.include?("maid's room") || 
-                         full_text.include?("maids room") ||
-                         full_text.match?(/\bmaid\b.*\broom\b/)
+        # IMPROVED: Check for maid's room ONLY in property details/description sections
+        # Look in specific PropertyFinder sections, not entire page
+        property_sections = doc.css(
+          '[class*="property-description"], ' \
+          '[class*="property-detail"], ' \
+          '[class*="PropertyDetail"], ' \
+          '[data-testid*="description"], ' \
+          'main, ' \
+          '[role="main"]'
+        )
+        
+        section_text = property_sections.map(&:text).join(" ").downcase
+        
+        # Exclude "maid service" (amenity) - only detect "maid's room" or "maid room" (bedroom feature)
+        # Remove "maid service" and "maid services" from detection text
+        cleaned_text = section_text.gsub(/\bmaid'?s?\s+service'?s?\b/, '')
+        
+        # Only detect if explicitly mentioned with bedroom count OR as a room feature
+        has_maids_room = cleaned_text.match?(/#{bedrooms}\s*bed.*\+.*maid/i) ||
+                         cleaned_text.match?(/#{bedrooms}\s*br.*\+.*maid/i) ||
+                         cleaned_text.match?(/\bmaid'?s?\s+room\b/) ||
+                         cleaned_text.match?(/\+\s*maid\s+(room|bed)/i) ||
+                         cleaned_text.match?(/with\s+maid'?s?\s+room/i)
         
         # Store maid's room detection in facts
         if has_maids_room
