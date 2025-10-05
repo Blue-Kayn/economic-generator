@@ -15,6 +15,20 @@
 
 <div class="fee-control">
   <label>
+    <input type="checkbox" data-property-analyzer-target="btlFurnishingEnabled" data-action="change->property-analyzer#updateCalculations">
+    Furnishing Cost:
+  </label>
+  <input 
+    type="number" 
+    data-property-analyzer-target="btlFurnishingCost"
+    data-action="change->property-analyzer#updateCalculations"
+    min="0" step="1000" value="50000" disabled style="width: 120px;"
+  >
+  <span style="color: #9ca3af;">AED one-time</span>
+</div>
+
+<div class="fee-control">
+  <label>
     <input type="checkbox" data-property-analyzer-target="btlServiceChargeEnabled" data-action="change->property-analyzer#updateCalculations">
     Service Charge:
   </label>

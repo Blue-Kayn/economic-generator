@@ -6,6 +6,19 @@ module Resolver
     def self.extract(url)
       doc = PageFetcher.get(url)
 
+      # EARLY CHECK: Detect hotel apartments from URL or page content
+      if hotel_apartment?(url, doc)
+        return {
+          building_name: nil,
+          unit_type: nil,
+          confidence: 0.0,
+          facts: {
+            error: "hotel_apartment",
+            error_message: "Hotel apartments are not supported. This tool is for residential properties only."
+          }
+        }
+      end
+
       building = nil
       unit_type = nil
       bedrooms = nil
@@ -288,6 +301,26 @@ module Resolver
         confidence: conf.clamp(0.0, 1.0),
         facts: facts.compact
       }
+    end
+
+    private
+
+    def self.hotel_apartment?(url, doc)
+      # Check URL for hotel apartment indicators
+      return true if url.match?(/hotel[-_]apartment/i)
+      return true if url.match?(/hotel[-_]hotel[-_]apartment/i)
+      
+      # Check page title and meta tags
+      meta_title = doc.at('meta[property="og:title"]')&.[]("content")
+      page_title = doc.at("title")&.text
+      meta_desc = doc.at('meta[name="description"]')&.[]("content")
+      
+      combined_text = "#{meta_title} #{page_title} #{meta_desc}".to_s.downcase
+      
+      return true if combined_text.match?(/hotel\s+apartment/i)
+      return true if combined_text.match?(/serviced\s+apartment/i)
+      
+      false
     end
   end
 end

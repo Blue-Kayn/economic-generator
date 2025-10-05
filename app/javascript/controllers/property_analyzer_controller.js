@@ -10,6 +10,7 @@ export default class extends Controller {
     "btlServiceChargeEnabled", "btlServiceChargeRate",
     "btlManagementFeeEnabled", "btlManagementFeePercent",
     "btlChillerFreeEnabled",
+    "btlFurnishingEnabled", "btlFurnishingCost",
     "managementFeeEnabled", "managementFeePercent",
     "chillerFreeEnabled"
   ]
@@ -41,6 +42,17 @@ export default class extends Controller {
       const data = await response.json()
       console.log("Received data:", data)
       this.lastData = data
+      
+      // Check for hotel apartment error
+      if (data.resolver?.facts?.error === 'hotel_apartment') {
+        this.resultsTarget.innerHTML = `
+          <div class="error-message">
+            <strong>${data.resolver.facts.error_message}</strong>
+          </div>
+        `
+        return
+      }
+      
       this.renderResults()
     } catch (error) {
       console.error("Error:", error)
@@ -75,6 +87,7 @@ export default class extends Controller {
       this.btlAgencyFeePercentTarget.disabled = !this.btlAgencyFeeEnabledTarget.checked
       this.btlServiceChargeRateTarget.disabled = !this.btlServiceChargeEnabledTarget.checked
       this.btlManagementFeePercentTarget.disabled = !this.btlManagementFeeEnabledTarget.checked
+      this.btlFurnishingCostTarget.disabled = !this.btlFurnishingEnabledTarget.checked
     } else {
       this.managementFeePercentTarget.disabled = !this.managementFeeEnabledTarget.checked
     }
@@ -86,6 +99,26 @@ export default class extends Controller {
     if (!this.lastData) return
 
     const hasEconomicsData = this.lastData.economics?.status === "ok" && this.lastData.economics?.data
+    const listingType = this.lastData.resolver?.facts?.listing_type
+
+    // Check for mode/listing type mismatch
+    if (this.currentMode === 'sublease' && listingType === 'sale') {
+      this.resultsTarget.innerHTML = `
+        <div class="error-message">
+          <strong>This is a sales listing. Please input a rental listing.</strong>
+        </div>
+      `
+      return
+    }
+
+    if (this.currentMode === 'investment' && listingType === 'rent') {
+      this.resultsTarget.innerHTML = `
+        <div class="error-message">
+          <strong>This is a rental listing. Please input a sales listing.</strong>
+        </div>
+      `
+      return
+    }
 
     if (!hasEconomicsData) {
       this.resultsTarget.innerHTML = `
@@ -123,9 +156,12 @@ export default class extends Controller {
       html += this.renderBuyToLeaseCalculations(this.lastData.economics.data, this.lastData.resolver)
     }
 
-    // Comparables
-    if (this.lastData.economics.listings?.length > 0) {
+    // Comparables - use economics.listings which has full projection data
+    if (this.lastData.economics?.listings?.length > 0) {
+      console.log("Listings data:", this.lastData.economics.listings)
       html += this.renderComparables(this.lastData.economics.listings, this.lastData.resolver)
+    } else {
+      console.log("No listings found. Full data:", this.lastData)
     }
 
     this.resultsTarget.innerHTML = html
@@ -310,6 +346,9 @@ export default class extends Controller {
     const agencyFeePercent = parseFloat(this.btlAgencyFeePercentTarget.value) || 0
     const agencyFee = agencyFeeEnabled ? Math.round(purchasePrice * (agencyFeePercent / 100)) : 0
     
+    const furnishingEnabled = this.btlFurnishingEnabledTarget.checked
+    const furnishingCost = furnishingEnabled ? (parseFloat(this.btlFurnishingCostTarget.value) || 0) : 0
+    
     const serviceChargeEnabled = this.btlServiceChargeEnabledTarget.checked
     const serviceChargeRate = parseFloat(this.btlServiceChargeRateTarget.value) || 0
     const sizeSqft = resolver.facts?.size_sqft || 0
@@ -329,7 +368,7 @@ export default class extends Controller {
     const tourismDirham = Math.round(12.5 * nightsOccupied)
     
     const annualNOI = afterManagementFee - utilities - tourismDirham - serviceCharge
-    const totalInvestment = purchasePrice + agencyFee
+    const totalInvestment = purchasePrice + agencyFee + furnishingCost
     const roi = totalInvestment > 0 ? ((annualNOI / totalInvestment) * 100).toFixed(2) : 0
     
     let html = `
@@ -348,9 +387,22 @@ export default class extends Controller {
           <div class="breakdown-label">+ Agency Fee (${agencyFeePercent}%) <span class="note">one-time</span></div>
           <div class="breakdown-value negative">AED ${agencyFee.toLocaleString()}</div>
         </div>
+      `
+    }
+
+    if (furnishingEnabled && furnishingCost > 0) {
+      html += `
+        <div class="breakdown-row">
+          <div class="breakdown-label">+ Furnishing Cost <span class="note">one-time</span></div>
+          <div class="breakdown-value negative">AED ${furnishingCost.toLocaleString()}</div>
+        </div>
+      `
+    }
+
+    if (agencyFeeEnabled || furnishingEnabled) {
+      html += `
         <div class="breakdown-row" style="border-top: 1px solid #374151; padding-top: 0.75rem; margin-top: 0.5rem;">
           <div class="breakdown-label" style="font-weight: 600;">Total Investment</div>
-          <div class="breakdown-value" style="font-weight: 600;">
           <div class="breakdown-value" style="font-weight: 600;">AED ${totalInvestment.toLocaleString()}</div>
         </div>
       `
@@ -425,12 +477,13 @@ export default class extends Controller {
       <p style="color: #9ca3af; font-size: 0.9rem; line-height: 1.6;">
         • Platform fees (15%) include Airbnb/booking.com commissions<br>
         ${agencyFeeEnabled ? `• Agency fee (${agencyFeePercent}%) is a one-time cost added to initial investment<br>` : ''}
+        ${furnishingEnabled ? `• Furnishing cost (AED ${furnishingCost.toLocaleString()}) is a one-time cost added to initial investment<br>` : ''}
         ${serviceChargeEnabled ? `• Service charge (${serviceChargeRate} AED/sqft) is an annual building maintenance fee<br>` : ''}
         ${managementFeeEnabled ? `• Management fee (${managementFeePercent}%) applied to revenue after platform fees<br>` : ''}
         • Utilities calculated at ${utilitiesRate} AED/sqft annually${chillerFree ? ' (chiller-free)' : ''}<br>
         • Tourism Dirham is 12.5 AED per night occupied<br>
         • ROI calculated as: (Annual NOI / Total Investment) × 100<br>
-        • Does not include: property appreciation, mortgage interest, maintenance${!managementFeeEnabled ? ', management fees' : ''}, furnishing costs<br>
+        • Does not include: property appreciation, mortgage interest, maintenance${!managementFeeEnabled ? ', management fees' : ''}${!furnishingEnabled ? ', furnishing costs' : ''}<br>
         • Based on median (p50) projections from ${econ.sample_n} comparable listings<br>
         • <strong>This is a cash purchase analysis - mortgage financing would change ROI calculations</strong>
       </p>
@@ -456,12 +509,12 @@ export default class extends Controller {
             <tr>
               <th>Airbnb ID</th>
               <th>Days Available</th>
+              <th>Actual Revenue</th>
               <th>Actual Occupancy</th>
               <th>Actual ADR</th>
-              <th>Actual Revenue</th>
-              <th>Projected Occupancy</th>
-              <th>Projected ADR</th>
-              <th>Projected Revenue</th>
+              <th>Projected Revenue (365d)</th>
+              <th>Projected Occupancy (365d)</th>
+              <th>Projected ADR (365d)</th>
               <th>Link</th>
             </tr>
           </thead>
@@ -469,16 +522,27 @@ export default class extends Controller {
     `
     
     listings.forEach(item => {
+      // Handle occupancy - can be either decimal (0.97) or percentage (97)
+      let actualOcc = "-"
+      if (item.raw_occ) {
+        actualOcc = item.raw_occ < 1 ? (item.raw_occ * 100).toFixed(1) : item.raw_occ.toFixed(1)
+      }
+      
+      let projectedOcc = "-"
+      if (item.projected_occ_365) {
+        projectedOcc = item.projected_occ_365 < 1 ? (item.projected_occ_365 * 100).toFixed(1) : item.projected_occ_365.toFixed(1)
+      }
+      
       html += `
         <tr>
           <td>${item.airbnb_id}</td>
-          <td>${item.days_available}</td>
-          <td>${item.raw_occ ? item.raw_occ.toFixed(1) + "%" : "-"}</td>
-          <td>AED ${item.raw_adr ? item.raw_adr.toFixed(0) : "-"}</td>
+          <td>${item.days_available || "-"}</td>
           <td>AED ${item.raw_revenue ? item.raw_revenue.toLocaleString() : "-"}</td>
-          <td>${item.projected_occ_365 ? item.projected_occ_365.toFixed(1) + "%" : "-"}</td>
-          <td>AED ${item.projected_adr_365 ? item.projected_adr_365.toFixed(0) : "-"}</td>
-          <td>AED ${item.projected_rev_365 ? item.projected_rev_365.toLocaleString() : "-"}</td>
+          <td>${actualOcc}${actualOcc !== "-" ? "%" : ""}</td>
+          <td>AED ${item.raw_adr ? Math.round(item.raw_adr).toLocaleString() : "-"}</td>
+          <td>AED ${item.projected_rev_365 ? Math.round(item.projected_rev_365).toLocaleString() : "-"}</td>
+          <td>${projectedOcc}${projectedOcc !== "-" ? "%" : ""}</td>
+          <td>AED ${item.projected_adr_365 ? Math.round(item.projected_adr_365).toLocaleString() : "-"}</td>
           <td><a href="${item.airbnb_url}" target="_blank">View</a></td>
         </tr>
       `
